@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Feed — TubeIntel{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1 class="page-title">Intel Feed</h1>
+  <p class="page-subtitle">Latest analyzed videos</p>
+</div>
+
+<div class="filter-bar">
+  <select id="filter-category" class="filter-select" onchange="applyFilters()">
+    <option value="">All Categories</option>
+    <option value="homelab">Homelab</option>
+    <option value="new_project">New Project</option>
+    <option value="apply_to_existing">Apply to Existing</option>
+    <option value="learning">Learning</option>
+    <option value="velvet_verve">Velvet & Verve</option>
+    <option value="low_value">Low Value</option>
+  </select>
+  <select id="filter-source" class="filter-select" onchange="applyFilters()">
+    <option value="">All Sources</option>
+    <option value="manual">Manual</option>
+    <option value="discord">Discord</option>
+    <option value="scheduled">Scheduled</option>
+  </select>
+  <input type="text" id="filter-keyword" class="filter-input" placeholder="Search..." onkeyup="debounceSearch()" />
+</div>
+
+<div id="feed-cards" class="feed-cards"></div>
+
+<div id="feed-status" class="feed-status"></div>
+
+<button id="load-more" class="btn btn-secondary load-more" onclick="loadMore()" style="display:none;">
+  Load more
+</button>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Feed state
+  let feedOffset = 0;
+  const feedLimit = 20;
+  let feedTotal = 0;
+  let searchTimer = null;
+  let refreshTimer = null;
+
+  function debounceSearch() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(applyFilters, 400);
+  }
+
+  function applyFilters() {
+    feedOffset = 0;
+    document.getElementById('feed-cards').innerHTML = '';
+    loadFeed();
+  }
+
+  function getFilterParams() {
+    const params = new URLSearchParams();
+    params.set('limit', feedLimit);
+    params.set('offset', feedOffset);
+    const cat = document.getElementById('filter-category').value;
+    const src = document.getElementById('filter-source').value;
+    const q = document.getElementById('filter-keyword').value.trim();
+    if (cat) params.set('category', cat);
+    if (src) params.set('source', src);
+    if (q) params.set('q', q);
+    return params;
+  }
+
+  async function loadFeed() {
+    const status = document.getElementById('feed-status');
+    status.textContent = 'Loading...';
+    status.className = 'feed-status';
+
+    try {
+      const params = getFilterParams();
+      const res = await fetch('/api/videos?' + params.toString());
+      const data = await res.json();
+      feedTotal = data.total;
+
+      const container = document.getElementById('feed-cards');
+      if (feedOffset === 0 && data.videos.length === 0) {
+        container.innerHTML = '<div class="empty-state">No videos found</div>';
+        document.getElementById('load-more').style.display = 'none';
+        status.textContent = '';
+        return;
+      }
+
+      data.videos.forEach((v, i) => {
+        const card = renderCard(v, feedOffset + i);
+        container.appendChild(card);
+      });
+
+      feedOffset += data.videos.length;
+      document.getElementById('load-more').style.display =
+        feedOffset < feedTotal ? 'block' : 'none';
+      status.textContent = '';
+
+      // Auto-refresh if any pending/processing
+      setupAutoRefresh(data.videos);
+    } catch (err) {
+      status.textContent = 'Failed to load feed';
+      status.className = 'feed-status error';
+    }
+  }
+
+  function loadMore() {
+    loadFeed();
+  }
+
+  function setupAutoRefresh(videos) {
+    if (refreshTimer) clearInterval(refreshTimer);
+    const hasPending = videos.some(v => v.status === 'pending' || v.status === 'processing');
+    if (hasPending) {
+      refreshTimer = setInterval(() => {
+        feedOffset = 0;
+        document.getElementById('feed-cards').innerHTML = '';
+        loadFeed();
+      }, 15000);
+    }
+  }
+
+  // Restore filters from URL on load
+  (function init() {
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('category'))
+      document.getElementById('filter-category').value = urlParams.get('category');
+    if (urlParams.get('source'))
+      document.getElementById('filter-source').value = urlParams.get('source');
+    if (urlParams.get('q'))
+      document.getElementById('filter-keyword').value = urlParams.get('q');
+    loadFeed();
+  })();
+</script>
+{% endblock %}

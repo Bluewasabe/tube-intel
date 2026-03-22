@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}Channels — TubeIntel{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1 class="page-title">Watched Channels</h1>
+  <p class="page-subtitle">Manage auto-polling channels</p>
+</div>
+
+<form id="add-channel-form" class="channel-add-form" onsubmit="handleAddChannel(event)">
+  <div class="channel-add-fields">
+    <input type="text" id="ch-id" class="filter-input" placeholder="Channel ID (UC...)" required />
+    <input type="text" id="ch-name" class="filter-input" placeholder="Channel name" required />
+    <select id="ch-interval" class="filter-select">
+      <option value="12">12h</option>
+      <option value="8">8h</option>
+      <option value="24">24h</option>
+    </select>
+  </div>
+  <button type="submit" class="btn btn-primary channel-add-btn">Add Channel</button>
+</form>
+
+<div id="channel-message" class="submit-result" style="display:none;"></div>
+
+<div id="channels-list" class="channels-list">
+  <div class="detail-loading">Loading...</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function loadChannels() {
+    const container = document.getElementById('channels-list');
+    try {
+      const res = await fetch('/api/channels');
+      const data = await res.json();
+
+      if (data.channels.length === 0) {
+        container.innerHTML = '<div class="empty-state">No channels configured</div>';
+        return;
+      }
+
+      let html = '<div class="channel-table">';
+      html += '<div class="channel-header-row">';
+      html += '<span class="ch-col-name">Channel</span>';
+      html += '<span class="ch-col-interval">Interval</span>';
+      html += '<span class="ch-col-checked">Last Checked</span>';
+      html += '<span class="ch-col-enabled">Enabled</span>';
+      html += '<span class="ch-col-actions"></span>';
+      html += '</div>';
+
+      data.channels.forEach(ch => {
+        html += renderChannelRow(ch);
+      });
+      html += '</div>';
+      container.innerHTML = html;
+    } catch (err) {
+      container.innerHTML = '<div class="empty-state">Failed to load channels</div>';
+    }
+  }
+
+  function renderChannelRow(ch) {
+    const checked = ch.last_checked_at ? formatDate(ch.last_checked_at) : 'Never';
+    const enabled = ch.enabled ? true : false;
+    return '<div class="channel-row" id="ch-row-' + escapeHtml(ch.channel_id) + '">' +
+      '<span class="ch-col-name">' +
+        '<span class="ch-name">' + escapeHtml(ch.channel_name || ch.channel_id) + '</span>' +
+        '<span class="ch-id">' + escapeHtml(ch.channel_id) + '</span>' +
+      '</span>' +
+      '<span class="ch-col-interval">' +
+        '<select class="filter-select ch-interval-select" onchange="updateInterval(\'' + escapeHtml(ch.channel_id) + '\', this.value)">' +
+          '<option value="8"' + (ch.check_interval_hours === 8 ? ' selected' : '') + '>8h</option>' +
+          '<option value="12"' + (ch.check_interval_hours === 12 ? ' selected' : '') + '>12h</option>' +
+          '<option value="24"' + (ch.check_interval_hours === 24 ? ' selected' : '') + '>24h</option>' +
+        '</select>' +
+      '</span>' +
+      '<span class="ch-col-checked">' + checked + '</span>' +
+      '<span class="ch-col-enabled">' +
+        '<label class="toggle">' +
+          '<input type="checkbox"' + (enabled ? ' checked' : '') + ' onchange="toggleChannel(\'' + escapeHtml(ch.channel_id) + '\', this.checked)" />' +
+          '<span class="toggle-slider"></span>' +
+        '</label>' +
+      '</span>' +
+      '<span class="ch-col-actions">' +
+        '<button class="btn btn-danger btn-sm" onclick="deleteChannel(\'' + escapeHtml(ch.channel_id) + '\')">Delete</button>' +
+      '</span>' +
+    '</div>';
+  }
+
+  async function handleAddChannel(e) {
+    e.preventDefault();
+    const channelId = document.getElementById('ch-id').value.trim();
+    const channelName = document.getElementById('ch-name').value.trim();
+    const interval = parseInt(document.getElementById('ch-interval').value);
+    const msg = document.getElementById('channel-message');
+
+    try {
+      const res = await fetch('/api/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channel_id: channelId,
+          channel_name: channelName,
+          channel_url: 'https://youtube.com/channel/' + channelId,
+          check_interval_hours: interval
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        msg.style.display = 'block';
+        msg.className = 'submit-result result-error';
+        msg.textContent = data.error || 'Failed to add channel';
+      } else {
+        msg.style.display = 'block';
+        msg.className = 'submit-result result-success';
+        msg.textContent = 'Channel added';
+        document.getElementById('ch-id').value = '';
+        document.getElementById('ch-name').value = '';
+        loadChannels();
+      }
+    } catch (err) {
+      msg.style.display = 'block';
+      msg.className = 'submit-result result-error';
+      msg.textContent = 'Network error';
+    }
+  }
+
+  async function toggleChannel(channelId, enabled) {
+    await fetch('/api/channels/' + channelId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: enabled })
+    });
+  }
+
+  async function updateInterval(channelId, hours) {
+    await fetch('/api/channels/' + channelId, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ check_interval_hours: parseInt(hours) })
+    });
+  }
+
+  async function deleteChannel(channelId) {
+    if (!confirm('Remove this channel?')) return;
+    await fetch('/api/channels/' + channelId, { method: 'DELETE' });
+    const row = document.getElementById('ch-row-' + channelId);
+    if (row) row.remove();
+    // Check if list is now empty
+    const rows = document.querySelectorAll('.channel-row');
+    if (rows.length === 0) {
+      document.getElementById('channels-list').innerHTML = '<div class="empty-state">No channels configured</div>';
+    }
+  }
+
+  loadChannels();
+</script>
+{% endblock %}

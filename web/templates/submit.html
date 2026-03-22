@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Submit — TubeIntel{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1 class="page-title">Submit Video</h1>
+  <p class="page-subtitle">Paste a YouTube URL for analysis</p>
+</div>
+
+<form id="submit-form" class="submit-form" onsubmit="handleSubmit(event)">
+  <div class="submit-field">
+    <input type="text" id="submit-url" class="submit-input" placeholder="https://youtube.com/watch?v=..." autocomplete="off" required />
+  </div>
+  <button type="submit" id="submit-btn" class="btn btn-primary submit-btn">
+    <span class="btn-text">Analyze</span>
+  </button>
+</form>
+
+<div id="submit-result" class="submit-result" style="display:none;"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  async function handleSubmit(e) {
+    e.preventDefault();
+    const urlInput = document.getElementById('submit-url');
+    const btn = document.getElementById('submit-btn');
+    const result = document.getElementById('submit-result');
+    const url = urlInput.value.trim();
+
+    if (!url) return;
+
+    btn.disabled = true;
+    btn.classList.add('loading');
+    result.style.display = 'none';
+
+    try {
+      const res = await fetch('/api/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url, source: 'manual' })
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showResult('error', data.error || 'Submission failed');
+      } else if (data.status === 'queued') {
+        showResult('success', 'Added to queue');
+        urlInput.value = '';
+      } else if (data.status === 'exists') {
+        showResult('exists', 'Already scanned', data.id);
+      }
+    } catch (err) {
+      showResult('error', 'Network error — could not reach server');
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('loading');
+    }
+  }
+
+  function showResult(type, message, videoId) {
+    const result = document.getElementById('submit-result');
+    result.style.display = 'block';
+    result.className = 'submit-result result-' + type;
+
+    if (type === 'exists' && videoId) {
+      result.innerHTML = message + ' &mdash; <a href="/video/' + videoId + '">view it on the feed</a>';
+    } else {
+      result.textContent = message;
+    }
+  }
+</script>
+{% endblock %}
