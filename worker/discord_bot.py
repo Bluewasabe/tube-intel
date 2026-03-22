@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 logger = logging.getLogger(__name__)
 
 WEB_BASE = os.environ.get("WEB_BASE_URL", "http://web:5090")
-SUBMIT_CHANNEL_ID = int(os.environ.get("DISCORD_SUBMIT_CHANNEL_ID", "0"))
+_submit_channel_raw = os.environ.get("DISCORD_SUBMIT_CHANNEL_ID", "0").strip()
+SUBMIT_CHANNEL_ID = int(_submit_channel_raw) if _submit_channel_raw else 0
 
 # Matches standard YouTube watch URLs and short youtu.be URLs
 YT_URL_RE = re.compile(
