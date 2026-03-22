@@ -56,6 +56,7 @@ def init_db(db_path: str):
 def get_conn(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -94,12 +95,14 @@ def get_video_by_id(db_path, vid_id) -> dict | None:
         return dict(row) if row else None
 
 
-def update_video_status(db_path, video_id, status, fail_reason=None, transcript=None):
+def update_video_status(db_path, video_id, status, fail_reason=None, transcript=None) -> bool:
+    """Returns True if the row was found and updated, False if video_id not found."""
     with get_conn(db_path) as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE videos SET status=?, fail_reason=?, transcript=? WHERE video_id=?",
             (status, fail_reason, transcript, video_id)
         )
+        return cur.rowcount > 0
 
 
 def get_pending_video(db_path) -> dict | None:
@@ -128,7 +131,12 @@ def get_analysis_by_video_id(db_path, video_id_fk) -> dict | None:
         row = conn.execute(
             "SELECT * FROM analysis WHERE video_id = ?", (video_id_fk,)
         ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        result = dict(row)
+        if result.get("relevant_projects"):
+            result["relevant_projects"] = json.loads(result["relevant_projects"])
+        return result
 
 
 def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword=None) -> list:
@@ -143,6 +151,9 @@ def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword
             params += [f"%{keyword}%", f"%{keyword}%"]
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params += [limit, offset]
+        # SAFETY: `where` only ever contains hardcoded clause strings ("a.category = ?", etc.)
+        # User-supplied values go through parameterized `?` bindings in `params` only.
+        # Never interpolate user input into `where` directly.
         rows = conn.execute(f"""
             SELECT v.*, a.summary, a.category, a.relevant_projects,
                    a.recommendation, a.confidence, a.analyzed_at
@@ -152,7 +163,14 @@ def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword
             ORDER BY v.created_at DESC
             LIMIT ? OFFSET ?
         """, params).fetchall()
-        return [dict(r) for r in rows]
+        results = [dict(r) for r in rows]
+        for r in results:
+            if r.get("relevant_projects"):
+                try:
+                    r["relevant_projects"] = json.loads(r["relevant_projects"])
+                except (json.JSONDecodeError, TypeError):
+                    r["relevant_projects"] = []
+        return results
 
 
 def insert_channel(db_path, channel_id, channel_name, channel_url, check_interval_hours=12):
@@ -204,7 +222,8 @@ def delete_channel(db_path, channel_id):
 
 
 def update_channel_interval(db_path, channel_id, hours: int):
-    assert hours in (8, 12, 24), "Interval must be 8, 12, or 24"
+    if hours not in (8, 12, 24):
+        raise ValueError(f"check_interval_hours must be 8, 12, or 24; got {hours}")
     with get_conn(db_path) as conn:
         conn.execute(
             "UPDATE watched_channels SET check_interval_hours=? WHERE channel_id=?",
