@@ -9,8 +9,8 @@
 
 <form id="add-channel-form" class="channel-add-form" onsubmit="handleAddChannel(event)">
   <div class="channel-add-fields">
-    <input type="text" id="ch-id" class="filter-input" placeholder="Channel ID (UC...)" required />
-    <input type="text" id="ch-name" class="filter-input" placeholder="Channel name" required />
+    <input type="text" id="ch-url" class="filter-input" placeholder="https://www.youtube.com/channel/UCxxxxxxx" required />
+    <input type="text" id="ch-name" class="filter-input" placeholder="e.g. Fireship — optional" />
     <select id="ch-interval" class="filter-select">
       <option value="12">12h</option>
       <option value="8">8h</option>
@@ -89,7 +89,7 @@
 
   async function handleAddChannel(e) {
     e.preventDefault();
-    const channelId = document.getElementById('ch-id').value.trim();
+    const channelUrl = document.getElementById('ch-url').value.trim();
     const channelName = document.getElementById('ch-name').value.trim();
     const interval = parseInt(document.getElementById('ch-interval').value);
     const msg = document.getElementById('channel-message');
@@ -99,9 +99,8 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          channel_id: channelId,
+          channel_url: channelUrl,
           channel_name: channelName,
-          channel_url: 'https://youtube.com/channel/' + channelId,
           check_interval_hours: interval
         })
       });
@@ -114,7 +113,7 @@
         msg.style.display = 'block';
         msg.className = 'submit-result result-success';
         msg.textContent = 'Channel added';
-        document.getElementById('ch-id').value = '';
+        document.getElementById('ch-url').value = '';
         document.getElementById('ch-name').value = '';
         loadChannels();
       }

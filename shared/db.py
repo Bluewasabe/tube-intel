@@ -140,7 +140,7 @@ def get_analysis_by_video_id(db_path, video_id_fk) -> dict | None:
         return result
 
 
-def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword=None) -> list:
+def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword=None, project=None) -> list:
     with get_conn(db_path) as conn:
         clauses, params = [], []
         if category:
@@ -150,6 +150,9 @@ def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword
         if keyword:
             clauses.append("(v.title LIKE ? OR a.summary LIKE ?)")
             params += [f"%{keyword}%", f"%{keyword}%"]
+        if project:
+            clauses.append("a.relevant_projects LIKE ?")
+            params.append(f'%"{project}"%')
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params += [limit, offset]
         # SAFETY: `where` only ever contains hardcoded clause strings ("a.category = ?", etc.)
@@ -174,7 +177,7 @@ def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword
         return results
 
 
-def count_videos(db_path, category=None, source=None, keyword=None) -> int:
+def count_videos(db_path, category=None, source=None, keyword=None, project=None) -> int:
     """Return total count of videos matching the given filters (for pagination)."""
     with get_conn(db_path) as conn:
         clauses, params = [], []
@@ -185,6 +188,9 @@ def count_videos(db_path, category=None, source=None, keyword=None) -> int:
         if keyword:
             clauses.append("(v.title LIKE ? OR a.summary LIKE ?)")
             params += [f"%{keyword}%", f"%{keyword}%"]
+        if project:
+            clauses.append("a.relevant_projects LIKE ?")
+            params.append(f'%"{project}"%')
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         # SAFETY: `where` only ever contains hardcoded clause strings.
         # User-supplied values go through parameterized `?` bindings in `params` only.

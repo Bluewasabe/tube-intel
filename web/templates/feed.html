@@ -24,6 +24,7 @@
     <option value="scheduled">Scheduled</option>
   </select>
   <input type="text" id="filter-keyword" class="filter-input" placeholder="Search..." onkeyup="debounceSearch()" />
+  <input type="text" id="filter-project" placeholder="project…" class="filter-input" onkeyup="debounceSearch()" />
 </div>
 
 <div id="feed-cards" class="feed-cards"></div>
@@ -62,9 +63,11 @@
     const cat = document.getElementById('filter-category').value;
     const src = document.getElementById('filter-source').value;
     const q = document.getElementById('filter-keyword').value.trim();
+    const project = document.getElementById('filter-project').value.trim();
     if (cat) params.set('category', cat);
     if (src) params.set('source', src);
     if (q) params.set('q', q);
+    if (project) params.set('project', project);
     return params;
   }
 

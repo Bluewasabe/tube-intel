@@ -65,9 +65,8 @@ def test_submit_dedup(client):
 
 def test_add_and_list_channel(client):
     r = client.post("/api/channels", json={
-        "channel_id": "UCtest123",
+        "channel_url": "https://www.youtube.com/channel/UCtest123",
         "channel_name": "Test Channel",
-        "channel_url": "https://youtube.com/@testchan",
         "check_interval_hours": 8
     })
     assert r.status_code == 200
@@ -78,24 +77,26 @@ def test_add_and_list_channel(client):
 
 def test_add_channel_invalid_interval(client):
     r = client.post("/api/channels", json={
-        "channel_id": "UCbad",
+        "channel_url": "https://www.youtube.com/channel/UCbad",
         "channel_name": "Bad",
-        "channel_url": "https://youtube.com/@bad",
         "check_interval_hours": 6
     })
     assert r.status_code == 400
 
 def test_delete_channel(client):
     client.post("/api/channels", json={
-        "channel_id": "UCdelete",
+        "channel_url": "https://www.youtube.com/channel/UCdelete",
         "channel_name": "Del",
-        "channel_url": "https://youtube.com/@del",
         "check_interval_hours": 12
     })
     r = client.delete("/api/channels/UCdelete")
     assert r.status_code == 200
     channels = client.get("/api/channels").get_json()["channels"]
     assert not any(c["channel_id"] == "UCdelete" for c in channels)
+
+def test_add_channel_invalid_url(client):
+    r = client.post("/api/channels", json={"channel_url": "https://example.com/notYouTube"})
+    assert r.status_code == 400
 
 def test_video_detail_not_found(client):
     r = client.get("/api/video/999")
@@ -113,9 +114,8 @@ def test_video_detail_found(client):
 
 def test_patch_channel_toggle(client):
     client.post("/api/channels", json={
-        "channel_id": "UCpatch",
+        "channel_url": "https://www.youtube.com/channel/UCpatch",
         "channel_name": "Patch",
-        "channel_url": "https://youtube.com/@patch",
         "check_interval_hours": 12
     })
     r = client.patch("/api/channels/UCpatch", json={"enabled": False})
@@ -196,11 +196,10 @@ def test_api_videos_limit_capped_at_100(client):
     r = client.get("/api/videos?limit=9999")
     assert r.status_code == 200
 
-def test_add_channel_missing_channel_id_returns_400(client):
-    """POST /api/channels without channel_id must return 400."""
+def test_add_channel_missing_channel_url_returns_400(client):
+    """POST /api/channels without channel_url must return 400."""
     r = client.post("/api/channels", json={
-        "channel_name": "No ID",
-        "channel_url": "https://youtube.com/@noid",
+        "channel_name": "No URL",
         "check_interval_hours": 12
     })
     assert r.status_code == 400
@@ -208,9 +207,8 @@ def test_add_channel_missing_channel_id_returns_400(client):
 def test_add_channel_bad_interval_string_defaults_to_12(client):
     """Non-integer check_interval_hours silently defaults to 12 and succeeds."""
     r = client.post("/api/channels", json={
-        "channel_id": "UCdefault",
+        "channel_url": "https://www.youtube.com/channel/UCdefault",
         "channel_name": "Default",
-        "channel_url": "https://youtube.com/@default",
         "check_interval_hours": "bad"
     })
     assert r.status_code == 200
@@ -218,9 +216,8 @@ def test_add_channel_bad_interval_string_defaults_to_12(client):
 def test_patch_channel_interval_only(client):
     """PATCH with only check_interval_hours (no enabled) must succeed."""
     client.post("/api/channels", json={
-        "channel_id": "UCinterval",
+        "channel_url": "https://www.youtube.com/channel/UCinterval",
         "channel_name": "Interval",
-        "channel_url": "https://youtube.com/@interval",
         "check_interval_hours": 12
     })
     r = client.patch("/api/channels/UCinterval", json={"check_interval_hours": 8})
@@ -229,9 +226,8 @@ def test_patch_channel_interval_only(client):
 def test_patch_channel_invalid_interval_value_returns_400(client):
     """PATCH with an integer interval not in {8,12,24} must return 400."""
     client.post("/api/channels", json={
-        "channel_id": "UCbadval",
+        "channel_url": "https://www.youtube.com/channel/UCbadval",
         "channel_name": "BadVal",
-        "channel_url": "https://youtube.com/@badval",
         "check_interval_hours": 12
     })
     r = client.patch("/api/channels/UCbadval", json={"check_interval_hours": 99})
@@ -240,9 +236,8 @@ def test_patch_channel_invalid_interval_value_returns_400(client):
 def test_patch_channel_interval_non_integer_returns_400(client):
     """PATCH with a string interval must return 400."""
     client.post("/api/channels", json={
-        "channel_id": "UCstrval",
+        "channel_url": "https://www.youtube.com/channel/UCstrval",
         "channel_name": "StrVal",
-        "channel_url": "https://youtube.com/@strval",
         "check_interval_hours": 12
     })
     r = client.patch("/api/channels/UCstrval", json={"check_interval_hours": "bad"})
