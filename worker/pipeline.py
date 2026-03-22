@@ -28,7 +28,6 @@ YT_PATTERN = re.compile(r'(?:youtube\.com/watch\?.*v=|youtu\.be/)([a-zA-Z0-9_-]{
 
 DB_PATH = os.environ.get("DB_PATH", "/data/tubeintel.db")
 CONTEXT_PATH = os.environ.get("CONTEXT_PATH", "/app/prompt_context.md")
-DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 
 def extract_video_id(url: str) -> str | None:
@@ -147,7 +146,8 @@ async def _call_claude(prompt: str) -> str:
 
 
 async def post_discord_success(video: dict, analysis: dict, base_url: str = "https://youtube-intel.bookclub44.com"):
-    if not DISCORD_WEBHOOK_URL:
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
         return
     rp = analysis.get("relevant_projects") or []
     if isinstance(rp, str):
@@ -162,16 +162,17 @@ async def post_discord_success(video: dict, analysis: dict, base_url: str = "htt
         f"🔗 View full analysis → {base_url}/video/{video['id']}"
     )
     async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(DISCORD_WEBHOOK_URL, json={"content": msg})
+        await client.post(webhook_url, json={"content": msg})
 
 
 async def post_discord_failure(video_id: str, title: str | None, fail_reason: str):
-    if not DISCORD_WEBHOOK_URL:
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    if not webhook_url:
         return
     label = title or f"video_id={video_id}"
     msg = f"⚠️ **Scan failed**\n📺 {label}\n❌ Reason: `{fail_reason}`"
     async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(DISCORD_WEBHOOK_URL, json={"content": msg})
+        await client.post(webhook_url, json={"content": msg})
 
 
 async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
@@ -196,6 +197,12 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
         existing = get_video_by_video_id(db_path, video_id)
         row_id = existing["id"] if existing else None
 
+    if row_id is None:
+        logger.error(f"Could not resolve row_id for {video_id} — aborting pipeline")
+        update_video_status(db_path, video_id, "failed", fail_reason="db_error")
+        await post_discord_failure(video_id, None, "db_error")
+        return {"video_id": video_id, "status": "failed"}
+
     update_video_status(db_path, video_id, "processing")
 
     # Fetch metadata
@@ -216,8 +223,7 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
         return {"video_id": video_id, "status": "failed"}
 
     # Fetch transcript (sync — run in executor so we don't block the event loop)
-    loop = asyncio.get_event_loop()
-    transcript = await loop.run_in_executor(None, fetch_transcript, video_id)
+    transcript = await asyncio.get_running_loop().run_in_executor(None, fetch_transcript, video_id)
     if not transcript:
         update_video_status(db_path, video_id, "failed", fail_reason="no_transcript")
         await post_discord_failure(video_id, title, "no_transcript")
