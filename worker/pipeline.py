@@ -17,6 +17,11 @@ from shared.db import (
 
 logger = logging.getLogger(__name__)
 
+
+class RateLimitExhausted(Exception):
+    pass
+
+
 VALID_CATEGORIES = {"new_project", "apply_to_existing", "learning", "homelab", "velvet_verve", "low_value"}
 VALID_CONFIDENCE = {"high", "medium", "low"}
 YT_PATTERN = re.compile(r'(?:youtube\.com/watch\?.*v=|youtu\.be/)([a-zA-Z0-9_-]{11})')
@@ -133,24 +138,28 @@ async def _call_claude(prompt: str) -> str:
             )
             return msg.content[0].text
         except Exception as e:
-            if "429" in str(e) and attempt < 3:
-                logger.warning(f"Rate limited, retrying in {wait}s...")
-                continue
+            if "429" in str(e):
+                if attempt < 3:
+                    logger.warning(f"Rate limited, retrying in {[5, 15, 45][attempt]}s...")
+                    continue
+                raise RateLimitExhausted("Rate limit exhausted after retries") from e
             raise
 
 
 async def post_discord_success(video: dict, analysis: dict, base_url: str = "https://youtube-intel.bookclub44.com"):
     if not DISCORD_WEBHOOK_URL:
         return
-    projects = json.loads(analysis.get("relevant_projects") or "[]")
-    projects_str = ", ".join(projects) if projects else "—"
+    rp = analysis.get("relevant_projects") or []
+    if isinstance(rp, str):
+        rp = json.loads(rp)
+    projects_str = ", ".join(rp) if rp else "—"
     msg = (
         f"✅ **New scan complete**\n"
         f"📺 {video['title']}\n"
         f"📁 Category: `{analysis['category']}`  |  Confidence: `{analysis['confidence']}`\n"
         f"🎯 Relevant to: {projects_str}\n"
         f"💡 {analysis['recommendation']}\n"
-        f"🔗 {base_url}/video/{video['id']}"
+        f"🔗 View full analysis → {base_url}/video/{video['id']}"
     )
     async with httpx.AsyncClient(timeout=10) as client:
         await client.post(DISCORD_WEBHOOK_URL, json={"content": msg})
@@ -222,6 +231,11 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
 
     try:
         raw = await _call_claude(prompt)
+    except RateLimitExhausted:
+        logger.error(f"Rate limit exhausted for {video_id}")
+        update_video_status(db_path, video_id, "failed", fail_reason="rate_limited")
+        await post_discord_failure(video_id, title, "rate_limited")
+        return {"video_id": video_id, "status": "failed"}
     except Exception as e:
         logger.error(f"Claude API error for {video_id}: {e}")
         update_video_status(db_path, video_id, "failed", fail_reason="claude_error")
@@ -235,6 +249,11 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
         try:
             raw2 = await _call_claude(prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after.")
             analysis_data = parse_claude_response(raw2)
+        except RateLimitExhausted:
+            logger.error(f"Rate limit exhausted on retry for {video_id}")
+            update_video_status(db_path, video_id, "failed", fail_reason="rate_limited")
+            await post_discord_failure(video_id, title, "rate_limited")
+            return {"video_id": video_id, "status": "failed"}
         except (ValueError, Exception) as e:
             logger.error(f"Parse error for {video_id}: {e}")
             update_video_status(db_path, video_id, "failed", fail_reason="parse_error")
