@@ -32,6 +32,7 @@ async def main():
 
     if DISCORD_BOT_TOKEN:
         logger.info("Starting Discord bot")
+        # discord_bot.start() blocks the event loop forever — APScheduler still fires because it posts coroutines to the same loop
         await discord_bot.start(DISCORD_BOT_TOKEN)
     else:
         logger.warning("DISCORD_BOT_TOKEN not set — Discord bot disabled, worker running scheduler only")

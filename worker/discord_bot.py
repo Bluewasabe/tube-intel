@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 WEB_BASE = os.environ.get("WEB_BASE_URL", "http://web:5090")
 _submit_channel_raw = os.environ.get("DISCORD_SUBMIT_CHANNEL_ID", "0").strip()
+# Defaults to 0 (not an error) — on_message ignores all channels when SUBMIT_CHANNEL_ID is 0 (disabled gracefully)
 SUBMIT_CHANNEL_ID = int(_submit_channel_raw) if _submit_channel_raw else 0
 
 # Matches standard YouTube watch URLs and short youtu.be URLs
@@ -57,6 +58,7 @@ async def on_message(message: discord.Message):
         elif data.get("status") == "queued":
             title = None
             try:
+                # Title isn't known at submit time — pipeline fetches it later; oEmbed gives an immediate label for the reply
                 oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
                 async with httpx.AsyncClient(timeout=5) as oe_client:
                     oe = await oe_client.get(oembed_url)

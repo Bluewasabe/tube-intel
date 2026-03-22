@@ -108,7 +108,7 @@ async def process_next_job(db_path: str = DB_PATH):
 def build_scheduler(db_path: str = DB_PATH) -> AsyncIOScheduler:
     """Build and return the AsyncIOScheduler with the job processor job registered."""
     scheduler = AsyncIOScheduler()
-    # Job processor fires every 30 seconds — one video per cycle
+    # One video per 30s cycle — rate-limits Claude API and avoids transcript fetch spikes
     scheduler.add_job(process_next_job, "interval", seconds=30,
                       id="job_processor", args=[db_path])
     return scheduler
@@ -126,5 +126,5 @@ async def reschedule_channels(scheduler: AsyncIOScheduler, db_path: str = DB_PAT
             scheduler.add_job(check_channel, "interval",
                               hours=ch["check_interval_hours"],
                               id=job_id, args=[ch, db_path])
-        # Immediate startup catch-up — don't wait for first interval
+        # Fire-and-forget catch-up: create_task so startup doesn't block waiting for each RSS fetch
         asyncio.create_task(check_channel(ch, db_path))
