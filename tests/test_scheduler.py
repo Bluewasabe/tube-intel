@@ -93,3 +93,53 @@ def test_fetch_rss_video_ids_skips_entries_without_id():
 
     result = asyncio.run(run())
     assert result == ["abc123"]
+
+
+def test_check_channel_queues_new_videos_only(tmp_path):
+    """check_channel diffs RSS against DB and POSTs only new video IDs."""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from shared.db import init_db, insert_video
+    from worker.scheduler import check_channel
+
+    db_path = str(tmp_path / "test.db")
+    init_db(db_path)
+
+    # Pre-populate DB with one video already known for this channel
+    insert_video(db_path, "https://youtube.com/watch?v=known1", "known1",
+                 title="Known", channel_name="TestChan", channel_id="UCtest",
+                 thumbnail_url="", published_at=None, source="scheduled")
+
+    # RSS feed returns 2 videos: one known, one new
+    rss_ids = ["known1", "new_video_1"]
+
+    posted_jsons = []
+
+    async def run():
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.json = MagicMock(return_value={"status": "queued", "id": 1})
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("worker.scheduler.fetch_rss_video_ids", AsyncMock(return_value=rss_ids)), \
+             patch("worker.scheduler.update_channel_last_checked"), \
+             patch("worker.scheduler.httpx.AsyncClient", return_value=mock_client):
+
+            channel = {"channel_id": "UCtest", "channel_name": "TestChan"}
+            await check_channel(channel, db_path)
+
+            for call in mock_client.post.call_args_list:
+                # call.kwargs["json"] or positional args[1]["json"]
+                kw = call.kwargs if call.kwargs else {}
+                if "json" not in kw and len(call.args) > 1:
+                    kw = call.args[1]
+                posted_jsons.append(kw.get("json", {}))
+
+    asyncio.run(run())
+
+    # Should have POSTed exactly once — only the new video
+    assert len(posted_jsons) == 1
+    assert "new_video_1" in posted_jsons[0].get("url", "")
+    assert posted_jsons[0].get("source") == "scheduled"
