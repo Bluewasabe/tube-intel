@@ -125,26 +125,40 @@
   }
 
   async function toggleChannel(channelId, enabled) {
-    await fetch('/api/channels/' + channelId, {
+    const checkbox = document.querySelector('#ch-row-' + channelId + ' input[type="checkbox"]');
+    const res = await fetch('/api/channels/' + channelId, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: enabled })
     });
+    if (!res.ok) {
+      alert('Failed to update channel. Please try again.');
+      if (checkbox) checkbox.checked = !enabled;
+      return;
+    }
   }
 
   async function updateInterval(channelId, hours) {
-    await fetch('/api/channels/' + channelId, {
+    const res = await fetch('/api/channels/' + channelId, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ check_interval_hours: parseInt(hours) })
     });
+    if (!res.ok) {
+      alert('Failed to update channel. Please try again.');
+      return;
+    }
   }
 
   async function deleteChannel(channelId) {
     if (!confirm('Remove this channel?')) return;
-    await fetch('/api/channels/' + channelId, { method: 'DELETE' });
-    const row = document.getElementById('ch-row-' + channelId);
-    if (row) row.remove();
+    const rowEl = document.getElementById('ch-row-' + channelId);
+    const res = await fetch('/api/channels/' + channelId, { method: 'DELETE' });
+    if (!res.ok) {
+      alert('Failed to delete channel. Please try again.');
+      return;
+    }
+    if (rowEl) rowEl.remove();
     // Check if list is now empty
     const rows = document.querySelectorAll('.channel-row');
     if (rows.length === 0) {

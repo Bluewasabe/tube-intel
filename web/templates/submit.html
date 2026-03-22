@@ -64,7 +64,12 @@
     result.className = 'submit-result result-' + type;
 
     if (type === 'exists' && videoId) {
-      result.innerHTML = message + ' &mdash; <a href="/video/' + videoId + '">view it on the feed</a>';
+      const safeId = parseInt(videoId, 10) || 0;
+      const link = document.createElement('a');
+      link.href = '/video/' + safeId;
+      link.textContent = 'view it on the feed';
+      result.textContent = message + ' \u2014 ';
+      result.appendChild(link);
     } else {
       result.textContent = message;
     }

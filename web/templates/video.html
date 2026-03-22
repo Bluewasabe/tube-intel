@@ -44,7 +44,7 @@
       html += '</div>';
 
       // Status
-      html += '<div class="detail-status status-' + v.status + '">' + v.status.toUpperCase() + '</div>';
+      html += '<div class="detail-status status-' + (v.status || 'unknown') + '">' + (v.status || 'unknown').toUpperCase() + '</div>';
 
       if (a) {
         // Category + confidence

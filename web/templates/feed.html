@@ -133,6 +133,10 @@
       document.getElementById('filter-source').value = urlParams.get('source');
     if (urlParams.get('q'))
       document.getElementById('filter-keyword').value = urlParams.get('q');
+    const projectInput = document.getElementById('filter-project');
+    if (projectInput) {
+      projectInput.value = urlParams.get('project') || '';
+    }
     loadFeed();
   })();
 </script>
