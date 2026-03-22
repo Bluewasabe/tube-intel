@@ -54,7 +54,17 @@ async def on_message(message: discord.Message):
         if data.get("status") == "exists":
             await message.reply("Already scanned — check the dashboard for results.")
         elif data.get("status") == "queued":
-            await message.reply("Queued for analysis. I'll post results in #yt-intel when done.")
+            title = None
+            try:
+                oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+                async with httpx.AsyncClient(timeout=5) as oe_client:
+                    oe = await oe_client.get(oembed_url)
+                    if oe.status_code == 200:
+                        title = oe.json().get("title")
+            except Exception:
+                pass
+            label = title if title else url
+            await message.reply(f"Queued: {label} — I'll post results in #yt-intel when done.")
         else:
             await message.reply(f"Could not queue: {data.get('error', 'unknown error')}")
     except Exception as e:
