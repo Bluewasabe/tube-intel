@@ -6,7 +6,7 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 
 ## Current Build State — 2026-03-22
 
-**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ⬜ (Worker + Discord) | Phase 4 ⬜ (Frontend) | Phase 5 ⬜ (Deploy)**
+**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ (Worker + Discord) | Phase 4 ⬜ (Frontend) | Phase 5 ⬜ (Deploy)**
 
 **Not yet live.** No containers built, no LXC provisioned, no NPM proxy configured.
 
@@ -22,6 +22,7 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 | `web/app.py` | ✅ | 2 |
 | `web/requirements.txt` | ✅ | 2 |
 | `tests/test_web_api.py` | ✅ | 2 |
+| Phase 3 | ✅ | Analysis pipeline (`worker/pipeline.py`) — extract, Claude, notify |
 | `web/Dockerfile` | ⬜ | 3 |
 | `worker/worker.py` | ⬜ | 3 |
 | `worker/pipeline.py` | ⬜ | 3 |
@@ -184,6 +185,16 @@ Note: `DB_PATH` has a hardcoded default of `/data/tubeintel.db` in `web/app.py`.
 | Docker network | Isolated per-stack (no shared `jarvis-net`) |
 
 Healthcheck path for NPM / Docker: `GET /health` → 200 `{"ok": true}`
+
+---
+
+## Phase 3 — Pipeline Key Notes
+
+- `fetch_transcript()` is synchronous (youtube-transcript-api has no async API) — always call via `run_in_executor` to avoid blocking the event loop
+- `DISCORD_WEBHOOK_URL` is read from `os.environ` inside each notify function (not at module level) so env changes at runtime take effect without restart
+- `RateLimitExhausted` is a distinct sentinel exception so `run_pipeline` can set `fail_reason=rate_limited` vs generic `claude_error`
+- `post_discord_success` accepts `relevant_projects` as either a Python list or a JSON string — handles both safely
+- `prompt_context.md` is read from `/app/prompt_context.md` at runtime (mounted read-only volume) — update on host, no rebuild needed
 
 ---
 

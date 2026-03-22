@@ -18,6 +18,7 @@ from shared.db import (
 logger = logging.getLogger(__name__)
 
 
+# Sentinel for rate limit exhaustion — lets run_pipeline set fail_reason="rate_limited" vs generic "claude_error"
 class RateLimitExhausted(Exception):
     pass
 
@@ -146,6 +147,7 @@ async def _call_claude(prompt: str) -> str:
 
 
 async def post_discord_success(video: dict, analysis: dict, base_url: str = "https://youtube-intel.bookclub44.com"):
+    # Read from env at call time (not module level) so runtime env changes take effect without restart
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
     if not webhook_url:
         return
@@ -166,6 +168,7 @@ async def post_discord_success(video: dict, analysis: dict, base_url: str = "htt
 
 
 async def post_discord_failure(video_id: str, title: str | None, fail_reason: str):
+    # Read from env at call time (not module level) so runtime env changes take effect without restart
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "")
     if not webhook_url:
         return
