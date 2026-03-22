@@ -9,8 +9,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from shared.db import (
     init_db, insert_video, get_video_by_video_id, get_video_by_id,
-    list_videos, get_analysis_by_video_id, insert_channel, list_all_channels,
-    toggle_channel, delete_channel, update_channel_interval
+    list_videos, count_videos, get_analysis_by_video_id, insert_channel,
+    list_all_channels, toggle_channel, delete_channel, update_channel_interval
 )
 
 DB_PATH = os.environ.get("DB_PATH", "/data/tubeintel.db")
@@ -78,14 +78,18 @@ def create_app(db_path: str = None) -> Flask:
         Query params: limit (max 100), offset, category, source, q (keyword)
         Returns: {"videos": [...], "total": int, "offset": int}
         """
-        limit = min(int(request.args.get("limit", 50)), 100)
-        offset = int(request.args.get("offset", 0))
+        try:
+            limit = min(int(request.args.get("limit", 50)), 100)
+            offset = max(int(request.args.get("offset", 0)), 0)
+        except (ValueError, TypeError):
+            return jsonify({"error": "limit and offset must be integers"}), 400
         category = request.args.get("category")
         source = request.args.get("source")
         keyword = request.args.get("q")
         rows = list_videos(_db, limit=limit, offset=offset,
                            category=category, source=source, keyword=keyword)
-        return jsonify({"videos": rows, "total": len(rows), "offset": offset})
+        total = count_videos(_db, category=category, source=source, keyword=keyword)
+        return jsonify({"videos": rows, "total": total, "offset": offset})
 
     @app.get("/api/video/<int:vid_id>")
     def api_video_detail(vid_id):
@@ -143,8 +147,11 @@ def create_app(db_path: str = None) -> Flask:
         """Update channel enabled state or check interval.
 
         Body: {"enabled": bool} and/or {"check_interval_hours": 8|12|24}
+        At least one field must be present.
         """
         data = request.get_json(silent=True) or {}
+        if "enabled" not in data and "check_interval_hours" not in data:
+            return jsonify({"error": "provide enabled or check_interval_hours"}), 400
         if "enabled" in data:
             toggle_channel(_db, channel_id, bool(data["enabled"]))
         if "check_interval_hours" in data:

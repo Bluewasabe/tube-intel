@@ -110,3 +110,33 @@ def test_video_detail_found(client):
     assert r.status_code == 200
     data = r.get_json()
     assert data["video"]["video_id"] == "abc1234abcd"
+
+def test_patch_channel_toggle(client):
+    client.post("/api/channels", json={
+        "channel_id": "UCpatch",
+        "channel_name": "Patch",
+        "channel_url": "https://youtube.com/@patch",
+        "check_interval_hours": 12
+    })
+    r = client.patch("/api/channels/UCpatch", json={"enabled": False})
+    assert r.status_code == 200
+    channels = client.get("/api/channels").get_json()["channels"]
+    match = next(c for c in channels if c["channel_id"] == "UCpatch")
+    assert match["enabled"] == 0
+
+def test_patch_channel_empty_body_returns_400(client):
+    r = client.patch("/api/channels/UCany", json={})
+    assert r.status_code == 400
+
+def test_api_videos_total_reflects_actual_count(client):
+    client.post("/api/submit", json={"url": "https://youtu.be/aaaaaaaaaaa", "source": "manual"})
+    client.post("/api/submit", json={"url": "https://youtu.be/bbbbbbbbbbb", "source": "manual"})
+    # Fetch with limit=1 — total should still be 2, not 1
+    r = client.get("/api/videos?limit=1")
+    data = r.get_json()
+    assert data["total"] == 2
+    assert len(data["videos"]) == 1
+
+def test_api_videos_invalid_params(client):
+    r = client.get("/api/videos?limit=abc")
+    assert r.status_code == 400
