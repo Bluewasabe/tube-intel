@@ -57,3 +57,7 @@ def test_build_prompt_contains_title_and_transcript():
     assert "this is the transcript" in prompt
     assert "## context" in prompt
     assert "JSON" in prompt
+
+def test_parse_claude_response_malformed_json():
+    with pytest.raises(ValueError, match="JSON parse failed"):
+        parse_claude_response("{not valid json")

@@ -19,3 +19,15 @@ def test_success_message_no_exception():
 def test_failure_message_no_exception():
     os.environ["DISCORD_WEBHOOK_URL"] = ""
     asyncio.run(post_discord_failure("abc123", "Some Video", "no_transcript"))
+
+def test_success_with_list_relevant_projects():
+    """Verify post_discord_success handles relevant_projects as Python list (not JSON string)."""
+    video = {"id": 2, "title": "List Test", "video_id": "xyz"}
+    analysis = {
+        "category": "learning",
+        "confidence": "medium",
+        "relevant_projects": ["FIBI", "homelab"],  # Python list, not JSON string
+        "recommendation": "Watch more videos."
+    }
+    os.environ["DISCORD_WEBHOOK_URL"] = ""
+    asyncio.run(post_discord_success(video, analysis))
