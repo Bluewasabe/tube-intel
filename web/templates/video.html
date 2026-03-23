@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Video — TubeIntel{% endblock %}
+
+{% block content %}
+<div id="video-detail" class="video-detail">
+  <div class="detail-loading">Loading...</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const vidId = {{ vid_id }};
+
+  async function loadVideo() {
+    const container = document.getElementById('video-detail');
+    try {
+      const res = await fetch('/api/video/' + vidId);
+      if (!res.ok) {
+        container.innerHTML = '<div class="empty-state">Video not found</div>';
+        return;
+      }
+      const data = await res.json();
+      const v = data.video;
+      const a = data.analysis;
+
+      let html = '';
+
+      // Back link
+      html += '<a href="/" class="back-link">&larr; Back to feed</a>';
+
+      // Thumbnail
+      if (v.thumbnail_url) {
+        html += '<div class="detail-thumb"><img src="' + escapeHtml(v.thumbnail_url) + '" alt="Thumbnail" /></div>';
+      }
+
+      // Title
+      html += '<h1 class="detail-title">' + escapeHtml(v.title || 'Untitled') + '</h1>';
+
+      // Channel + date
+      html += '<div class="detail-meta">';
+      if (v.channel_name) html += '<span class="detail-channel">' + escapeHtml(v.channel_name) + '</span>';
+      if (v.published_at) html += '<span class="detail-date">' + formatDate(v.published_at) + '</span>';
+      html += '<span class="badge badge-source badge-' + (v.source || 'manual') + '">' + escapeHtml(v.source || 'manual') + '</span>';
+      html += '</div>';
+
+      // Status
+      html += '<div class="detail-status status-' + (v.status || 'unknown') + '">' + (v.status || 'unknown').toUpperCase() + '</div>';
+
+      if (a) {
+        // Category + confidence
+        html += '<div class="detail-badges">';
+        html += '<span class="badge badge-category" style="--cat-color:' + categoryColor(a.category) + '">' + formatCategory(a.category) + '</span>';
+        if (a.confidence) {
+          html += '<span class="badge badge-confidence badge-confidence-' + a.confidence + '">' + a.confidence + ' confidence</span>';
+        }
+        html += '</div>';
+
+        // Summary
+        html += '<div class="detail-section"><h2 class="detail-section-title">Summary</h2>';
+        html += '<p class="detail-summary">' + escapeHtml(a.summary || '') + '</p></div>';
+
+        // Recommendation
+        if (a.recommendation) {
+          html += '<div class="detail-section detail-recommendation"><h2 class="detail-section-title">Recommendation</h2>';
+          html += '<p>' + escapeHtml(a.recommendation) + '</p></div>';
+        }
+
+        // Relevant projects
+        if (a.relevant_projects && a.relevant_projects.length > 0) {
+          html += '<div class="detail-section"><h2 class="detail-section-title">Relevant Projects</h2>';
+          html += '<div class="detail-tags">';
+          a.relevant_projects.forEach(p => {
+            html += '<span class="tag">' + escapeHtml(p) + '</span>';
+          });
+          html += '</div></div>';
+        }
+
+        // Analyzed at
+        if (a.analyzed_at) {
+          html += '<div class="detail-meta-line">Analyzed: ' + formatDate(a.analyzed_at) + '</div>';
+        }
+      } else if (v.status === 'failed') {
+        html += '<div class="detail-section detail-error"><p>Analysis failed' +
+          (v.fail_reason ? ': ' + escapeHtml(v.fail_reason) : '') + '</p></div>';
+      }
+
+      // YouTube link
+      html += '<a href="' + escapeHtml(v.youtube_url) + '" target="_blank" rel="noopener" class="btn btn-primary detail-yt-link">Watch on YouTube &rarr;</a>';
+
+      // Transcript
+      if (v.transcript) {
+        html += '<div class="detail-section detail-transcript">';
+        html += '<button class="transcript-toggle" onclick="this.parentElement.classList.toggle(\'expanded\')">Transcript</button>';
+        html += '<pre class="transcript-content">' + escapeHtml(v.transcript) + '</pre>';
+        html += '</div>';
+      }
+
+      container.innerHTML = html;
+    } catch (err) {
+      container.innerHTML = '<div class="empty-state">Error loading video</div>';
+    }
+  }
+
+  loadVideo();
+</script>
+{% endblock %}

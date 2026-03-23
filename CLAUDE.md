@@ -6,9 +6,18 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 
 ## Current Build State — 2026-03-22
 
-**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ (Worker + Discord) | Phase 4 ✅ (Worker Scheduler + Discord Bot) | Phase 5 ⬜ (Frontend) | Phase 6 ⬜ (Deploy)**
+**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ (Worker + Discord) | Phase 4 ✅ (Worker Scheduler + Discord Bot) | Phase 5 ✅ (Dashboard UI) | Phase 6 ⬜ (Deploy)**
 
 **Not yet live.** No containers built, no LXC provisioned, no NPM proxy configured.
+
+| Phase | Done | Description |
+|-------|------|-------------|
+| Phase 1 | ✅ | DB layer — schema, CRUD, WAL, JSON serialization |
+| Phase 2 | ✅ | Flask web API — 10 routes, app factory, tests |
+| Phase 3 | ✅ | Analysis pipeline — transcript, Claude, Discord notify |
+| Phase 4 | ✅ | Worker scheduler + Discord bot |
+| Phase 5 | ✅ | Dashboard UI — feed, detail, submit, channels pages |
+| Phase 6 | ⬜ | Deploy — Docker Compose, Dockerfiles, LXC, NPM |
 
 | File | Done | Phase |
 |------|------|-------|
@@ -30,8 +39,13 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 | `worker/scheduler.py` | ✅ | 4 |
 | `worker/requirements.txt` | ⬜ | 4 |
 | `worker/Dockerfile` | ⬜ | 4 |
-| `web/templates/` | ⬜ | 5 |
-| `web/static/` | ⬜ | 5 |
+| `web/templates/base.html` | ✅ | 5 |
+| `web/templates/feed.html` | ✅ | 5 |
+| `web/templates/video.html` | ✅ | 5 |
+| `web/templates/submit.html` | ✅ | 5 |
+| `web/templates/channels.html` | ✅ | 5 |
+| `web/static/style.css` | ✅ | 5 |
+| `web/static/app.js` | ✅ | 5 |
 | `docker-compose.yml` | ⬜ | 5 |
 
 ---
@@ -226,3 +240,16 @@ Healthcheck path for NPM / Docker: `GET /health` → 200 `{"ok": true}`
 - `request.get_json(silent=True) or {}` pattern throughout — never crashes on missing or malformed JSON body.
 - The `health` route has no docstring by design — it's self-evident. All 6 API routes have docstrings.
 - `curl` will need to be in the web Dockerfile for the Docker healthcheck — `python:3.12-slim` doesn't include it (lesson from FIBI Phase 3).
+
+---
+
+## Phase 5 — Dashboard Key Notes
+
+- **Aesthetic:** Terminal Intelligence — dark background (`#0b0c0f`), amber accent (`#f0c040`), Space Mono (headings/badges) + Inter (body)
+- All pages load from Flask-rendered templates; data is fetched client-side via `/api/*` endpoints — no server-side rendering of data
+- **Category badge colors:** homelab=blue, new_project=green, apply=orange, learning=yellow, velvet_verve=purple, low_value=gray
+- **Feed filters:** category, source, keyword, and project name; filter values sync to URL params for bookmarkability (restored from URL on page load)
+- **Channel add form:** accepts a YouTube channel URL (`youtube.com/channel/UCxxx`); server extracts the `channel_id` from the URL
+- **Auto-refresh:** fires every 15s when any pending or processing videos are present on the current page; clears when none remain
+- `relevant_projects` is stored as a JSON string in SQLite, deserialized to a Python list by `db.py`; the API returns it as a JSON array to the client
+- `video.html` and `channels.html` fetch all data on page load via JS — there is no template-level data injection for these pages

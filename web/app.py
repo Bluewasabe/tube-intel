@@ -19,10 +19,23 @@ VALID_INTERVALS = {8, 12, 24}
 # Matches standard and short YouTube URLs, extracts the 11-char video ID
 _YT_RE = re.compile(r'(?:youtube\.com/watch\?.*v=|youtu\.be/)([a-zA-Z0-9_-]{11})')
 
+# Matches youtube.com/channel/UCxxxxxxx channel URLs
+_YT_CHANNEL_RE = re.compile(r'youtube\.com/channel/(UC[a-zA-Z0-9_-]+)')
+
 
 def extract_video_id(url: str) -> str | None:
     """Extract YouTube video ID from a URL. Returns None if not a valid YouTube URL."""
     m = _YT_RE.search(url)
+    return m.group(1) if m else None
+
+
+def extract_channel_id_from_url(url: str) -> str | None:
+    """Extract YouTube channel ID from a channel URL.
+
+    Supports: youtube.com/channel/UCxxxxxxx
+    Returns None for /@handle URLs (require network resolution, out of scope).
+    """
+    m = _YT_CHANNEL_RE.search(url)
     return m.group(1) if m else None
 
 
@@ -86,9 +99,10 @@ def create_app(db_path: str = None) -> Flask:
         category = request.args.get("category")
         source = request.args.get("source")
         keyword = request.args.get("q")
+        project = request.args.get("project")
         rows = list_videos(_db, limit=limit, offset=offset,
-                           category=category, source=source, keyword=keyword)
-        total = count_videos(_db, category=category, source=source, keyword=keyword)
+                           category=category, source=source, keyword=keyword, project=project)
+        total = count_videos(_db, category=category, source=source, keyword=keyword, project=project)
         return jsonify({"videos": rows, "total": total, "offset": offset})
 
     @app.get("/api/video/<int:vid_id>")
@@ -115,13 +129,13 @@ def create_app(db_path: str = None) -> Flask:
     def api_add_channel():
         """Add a channel to the watch list.
 
-        Body: {"channel_id": str, "channel_name": str, "channel_url": str,
+        Body: {"channel_url": str, "channel_name": str (optional),
                "check_interval_hours": 8|12|24}
+        channel_url must be in youtube.com/channel/UCxxxxxxx format.
         """
         data = request.get_json(silent=True) or {}
-        channel_id = (data.get("channel_id") or "").strip()
-        channel_name = (data.get("channel_name") or "").strip()
         channel_url = (data.get("channel_url") or "").strip()
+        channel_name = (data.get("channel_name") or "").strip()
 
         try:
             interval = int(data.get("check_interval_hours", 12))
@@ -130,11 +144,18 @@ def create_app(db_path: str = None) -> Flask:
 
         if interval not in VALID_INTERVALS:
             return jsonify({"error": "interval must be 8, 12, or 24"}), 400
+        if not channel_url:
+            return jsonify({"error": "channel_url required"}), 400
+
+        channel_id = extract_channel_id_from_url(channel_url)
         if not channel_id:
-            return jsonify({"error": "channel_id required"}), 400
+            return jsonify({"error": "Could not extract channel ID from URL. Use format: youtube.com/channel/UCxxxxxxx"}), 400
+
+        if not channel_name:
+            channel_name = channel_id
 
         insert_channel(_db, channel_id, channel_name, channel_url, interval)
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "channel_id": channel_id})
 
     @app.delete("/api/channels/<channel_id>")
     def api_delete_channel(channel_id):

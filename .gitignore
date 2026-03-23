@@ -9,3 +9,10 @@ dist/
 .venv/
 venv/
 .DS_Store
+
+# Screenshot tooling (local dev only)
+screenshot.mjs
+package.json
+package-lock.json
+node_modules/
+temporary screenshots/
