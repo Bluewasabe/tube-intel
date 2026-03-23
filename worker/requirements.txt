@@ -1,0 +1,7 @@
+discord.py>=2.3
+apscheduler>=3.10
+httpx>=0.27
+anthropic>=0.30
+youtube-transcript-api>=0.6
+yt-dlp>=2024.1
+feedparser>=6.0
