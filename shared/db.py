@@ -174,6 +174,28 @@ def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword
         return results
 
 
+def count_videos(db_path, category=None, source=None, keyword=None) -> int:
+    """Return total count of videos matching the given filters (for pagination)."""
+    with get_conn(db_path) as conn:
+        clauses, params = [], []
+        if category:
+            clauses.append("a.category = ?"); params.append(category)
+        if source:
+            clauses.append("v.source = ?"); params.append(source)
+        if keyword:
+            clauses.append("(v.title LIKE ? OR a.summary LIKE ?)")
+            params += [f"%{keyword}%", f"%{keyword}%"]
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        # SAFETY: `where` only ever contains hardcoded clause strings.
+        # User-supplied values go through parameterized `?` bindings in `params` only.
+        row = conn.execute(f"""
+            SELECT COUNT(*) FROM videos v
+            LEFT JOIN analysis a ON a.video_id = v.id
+            {where}
+        """, params).fetchone()
+        return row[0] if row else 0
+
+
 def insert_channel(db_path, channel_id, channel_name, channel_url, check_interval_hours=12):
     with get_conn(db_path) as conn:
         conn.execute(
