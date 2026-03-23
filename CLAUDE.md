@@ -6,7 +6,7 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 
 ## Current Build State — 2026-03-22
 
-**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ (Worker + Discord) | Phase 4 ⬜ (Frontend) | Phase 5 ⬜ (Deploy)**
+**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ (Worker + Discord) | Phase 4 ✅ (Worker Scheduler + Discord Bot) | Phase 5 ⬜ (Frontend) | Phase 6 ⬜ (Deploy)**
 
 **Not yet live.** No containers built, no LXC provisioned, no NPM proxy configured.
 
@@ -24,14 +24,14 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 | `tests/test_web_api.py` | ✅ | 2 |
 | Phase 3 | ✅ | Analysis pipeline (`worker/pipeline.py`) — extract, Claude, notify |
 | `web/Dockerfile` | ⬜ | 3 |
-| `worker/worker.py` | ⬜ | 3 |
-| `worker/pipeline.py` | ⬜ | 3 |
-| `worker/discord_bot.py` | ⬜ | 3 |
-| `worker/scheduler.py` | ⬜ | 3 |
-| `worker/requirements.txt` | ⬜ | 3 |
-| `worker/Dockerfile` | ⬜ | 3 |
-| `web/templates/` | ⬜ | 4 |
-| `web/static/` | ⬜ | 4 |
+| `worker/worker.py` | ✅ | 4 |
+| `worker/pipeline.py` | ✅ | 3 |
+| `worker/discord_bot.py` | ✅ | 4 |
+| `worker/scheduler.py` | ✅ | 4 |
+| `worker/requirements.txt` | ⬜ | 4 |
+| `worker/Dockerfile` | ⬜ | 4 |
+| `web/templates/` | ⬜ | 5 |
+| `web/static/` | ⬜ | 5 |
 | `docker-compose.yml` | ⬜ | 5 |
 
 ---
@@ -195,6 +195,17 @@ Healthcheck path for NPM / Docker: `GET /health` → 200 `{"ok": true}`
 - `RateLimitExhausted` is a distinct sentinel exception so `run_pipeline` can set `fail_reason=rate_limited` vs generic `claude_error`
 - `post_discord_success` accepts `relevant_projects` as either a Python list or a JSON string — handles both safely
 - `prompt_context.md` is read from `/app/prompt_context.md` at runtime (mounted read-only volume) — update on host, no rebuild needed
+
+---
+
+## Phase 4 — Worker Key Notes
+
+- `worker.py` uses a single asyncio event loop — `discord.py` and APScheduler both post coroutines to it; `discord_bot.start()` blocks forever but the scheduler still fires via the same loop
+- `DISCORD_BOT_TOKEN` not required — if absent, worker runs scheduler-only (Discord bot disabled); the event loop is kept alive with `asyncio.sleep(3600)`
+- `DISCORD_SUBMIT_CHANNEL_ID` must be a numeric channel ID (not a name); defaults to `0` (disabled) if blank — `on_message` silently ignores all messages when the ID is `0`
+- `check_channel` queues new videos via POST to the web container's `/api/submit` — requires `WEB_BASE_URL=http://web:5090` in the environment
+- `_channel_fail_counts` is in-memory (resets on restart) — 3 consecutive RSS fetch failures trigger a Discord webhook warning; count resets to `0` on any success
+- `reschedule_channels` fires `asyncio.create_task(check_channel(...))` immediately on startup for each enabled channel — catch-up runs fire-and-forget so startup doesn't block waiting for RSS fetches
 
 ---
 
