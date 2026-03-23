@@ -6,7 +6,7 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 
 ## Current Build State — 2026-03-22
 
-**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ (Worker + Discord) | Phase 4 ✅ (Worker Scheduler + Discord Bot) | Phase 5 ✅ (Dashboard UI) | Phase 6 ⬜ (Deploy)**
+**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ (Worker + Discord) | Phase 4 ✅ (Worker Scheduler + Discord Bot) | Phase 5 ✅ (Dashboard UI) | Phase 6 ✅ (Deploy)**
 
 **Not yet live.** No containers built, no LXC provisioned, no NPM proxy configured.
 
@@ -17,7 +17,7 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 | Phase 3 | ✅ | Analysis pipeline — transcript, Claude, Discord notify |
 | Phase 4 | ✅ | Worker scheduler + Discord bot |
 | Phase 5 | ✅ | Dashboard UI — feed, detail, submit, channels pages |
-| Phase 6 | ⬜ | Deploy — Docker Compose, Dockerfiles, LXC, NPM |
+| Phase 6 | ✅ | Deploy — Dockerfiles, docker-compose.yml |
 
 | File | Done | Phase |
 |------|------|-------|
@@ -32,13 +32,13 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 | `web/requirements.txt` | ✅ | 2 |
 | `tests/test_web_api.py` | ✅ | 2 |
 | Phase 3 | ✅ | Analysis pipeline (`worker/pipeline.py`) — extract, Claude, notify |
-| `web/Dockerfile` | ⬜ | 3 |
+| `web/Dockerfile` | ✅ | 6 |
 | `worker/worker.py` | ✅ | 4 |
 | `worker/pipeline.py` | ✅ | 3 |
 | `worker/discord_bot.py` | ✅ | 4 |
 | `worker/scheduler.py` | ✅ | 4 |
-| `worker/requirements.txt` | ⬜ | 4 |
-| `worker/Dockerfile` | ⬜ | 4 |
+| `worker/requirements.txt` | ✅ | 4 |
+| `worker/Dockerfile` | ✅ | 6 |
 | `web/templates/base.html` | ✅ | 5 |
 | `web/templates/feed.html` | ✅ | 5 |
 | `web/templates/video.html` | ✅ | 5 |
@@ -46,7 +46,7 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 | `web/templates/channels.html` | ✅ | 5 |
 | `web/static/style.css` | ✅ | 5 |
 | `web/static/app.js` | ✅ | 5 |
-| `docker-compose.yml` | ⬜ | 5 |
+| `docker-compose.yml` | ✅ | 6 |
 
 ---
 
@@ -253,3 +253,17 @@ Healthcheck path for NPM / Docker: `GET /health` → 200 `{"ok": true}`
 - **Auto-refresh:** fires every 15s when any pending or processing videos are present on the current page; clears when none remain
 - `relevant_projects` is stored as a JSON string in SQLite, deserialized to a Python list by `db.py`; the API returns it as a JSON array to the client
 - `video.html` and `channels.html` fetch all data on page load via JS — there is no template-level data injection for these pages
+
+---
+
+## Phase 6 — Deployment Key Notes
+
+- Both Dockerfiles use the repo root as build context (`context: .`) — required for `COPY shared/ ./shared/` to work; the service subdirectory alone cannot see sibling directories
+- `worker` depends on `web` with `condition: service_healthy` — won't start until `/health` returns 200; prevents worker from hitting the API before Flask is up
+- `WEB_BASE_URL=http://web:5090` — uses Docker Compose service name for inter-container communication; `localhost` will not work inside a container
+- `DB_PATH=/data/tubeintel.db` — SQLite mounted via `./data:/data` volume; data persists across restarts and survives container rebuilds
+- `prompt_context.md` mounted read-only at `/app/prompt_context.md` — edit on host, worker picks up changes on next run with no rebuild needed
+- Log rotation configured: `max-size: 10m`, `max-file: 3` — avoids disk fill on LXC with long-running containers
+- Build command: `docker compose build` (run from repo root)
+- Start command: `docker compose up -d`
+- `curl` must be installed in the web Dockerfile for Docker healthcheck — `python:3.12-slim` doesn't include it by default

@@ -1,0 +1,53 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: web/Dockerfile
+    ports:
+      - "5090:5090"
+    volumes:
+      - ./data:/data
+      - ./prompt_context.md:/app/prompt_context.md:ro
+    env_file: .env
+    environment:
+      DB_PATH: /data/tubeintel.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    volumes:
+      - ./data:/data
+      - ./prompt_context.md:/app/prompt_context.md:ro
+    env_file: .env
+    environment:
+      DB_PATH: /data/tubeintel.db
+      WEB_BASE_URL: http://web:5090
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
