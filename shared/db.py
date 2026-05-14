@@ -1,5 +1,6 @@
 import sqlite3
 import json
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 
 
@@ -8,58 +9,69 @@ def _now():
 
 
 def init_db(db_path: str):
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS videos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            youtube_url TEXT NOT NULL,
-            video_id TEXT UNIQUE NOT NULL,
-            title TEXT,
-            channel_name TEXT,
-            channel_id TEXT,
-            thumbnail_url TEXT,
-            published_at TEXT,
-            transcript TEXT,
-            source TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            fail_reason TEXT,
-            created_at TEXT NOT NULL
-        );
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                youtube_url TEXT NOT NULL,
+                video_id TEXT UNIQUE NOT NULL,
+                title TEXT,
+                channel_name TEXT,
+                channel_id TEXT,
+                thumbnail_url TEXT,
+                published_at TEXT,
+                transcript TEXT,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                fail_reason TEXT,
+                created_at TEXT NOT NULL
+            );
 
-        CREATE TABLE IF NOT EXISTS analysis (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            video_id INTEGER UNIQUE NOT NULL REFERENCES videos(id),
-            summary TEXT,
-            category TEXT,
-            relevant_projects TEXT,
-            recommendation TEXT,
-            confidence TEXT,
-            analyzed_at TEXT NOT NULL
-        );
+            CREATE TABLE IF NOT EXISTS analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id INTEGER UNIQUE NOT NULL REFERENCES videos(id),
+                summary TEXT,
+                category TEXT,
+                relevant_projects TEXT,
+                recommendation TEXT,
+                confidence TEXT,
+                analyzed_at TEXT NOT NULL
+            );
 
-        CREATE TABLE IF NOT EXISTS watched_channels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel_id TEXT UNIQUE NOT NULL,
-            channel_name TEXT,
-            channel_url TEXT,
-            check_interval_hours INTEGER NOT NULL DEFAULT 12,
-            last_checked_at TEXT,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            added_at TEXT NOT NULL
-        );
-    """)
-    conn.commit()
-    conn.close()
+            CREATE TABLE IF NOT EXISTS watched_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel_id TEXT UNIQUE NOT NULL,
+                channel_name TEXT,
+                channel_url TEXT,
+                check_interval_hours INTEGER NOT NULL DEFAULT 12,
+                last_checked_at TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                added_at TEXT NOT NULL
+            );
+        """)
+        conn.commit()
 
 
-def get_conn(db_path: str) -> sqlite3.Connection:
+@contextmanager
+def get_conn(db_path: str):
+    # Yields a sqlite3.Connection that commits on success, rolls back on
+    # exception, and ALWAYS closes. sqlite3.Connection's own context manager
+    # commits/rollbacks but does not close — this fills that gap and prevents
+    # file-handle accumulation in long-running workers.
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def insert_video(db_path, youtube_url, video_id, title, channel_name,
@@ -140,7 +152,7 @@ def get_analysis_by_video_id(db_path, video_id_fk) -> dict | None:
         return result
 
 
-def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword=None) -> list:
+def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword=None, project=None) -> list:
     with get_conn(db_path) as conn:
         clauses, params = [], []
         if category:
@@ -150,6 +162,9 @@ def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword
         if keyword:
             clauses.append("(v.title LIKE ? OR a.summary LIKE ?)")
             params += [f"%{keyword}%", f"%{keyword}%"]
+        if project:
+            clauses.append("a.relevant_projects LIKE ?")
+            params.append(f'%"{project}"%')
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params += [limit, offset]
         # SAFETY: `where` only ever contains hardcoded clause strings ("a.category = ?", etc.)
@@ -174,7 +189,7 @@ def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword
         return results
 
 
-def count_videos(db_path, category=None, source=None, keyword=None) -> int:
+def count_videos(db_path, category=None, source=None, keyword=None, project=None) -> int:
     """Return total count of videos matching the given filters (for pagination)."""
     with get_conn(db_path) as conn:
         clauses, params = [], []
@@ -185,6 +200,9 @@ def count_videos(db_path, category=None, source=None, keyword=None) -> int:
         if keyword:
             clauses.append("(v.title LIKE ? OR a.summary LIKE ?)")
             params += [f"%{keyword}%", f"%{keyword}%"]
+        if project:
+            clauses.append("a.relevant_projects LIKE ?")
+            params.append(f'%"{project}"%')
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         # SAFETY: `where` only ever contains hardcoded clause strings.
         # User-supplied values go through parameterized `?` bindings in `params` only.

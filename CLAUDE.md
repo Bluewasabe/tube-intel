@@ -6,9 +6,18 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 
 ## Current Build State — 2026-03-22
 
-**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ⬜ (Worker + Discord) | Phase 4 ⬜ (Frontend) | Phase 5 ⬜ (Deploy)**
+**Status: Phase 1 ✅ | Phase 2 ✅ | Phase 3 ✅ (Worker + Discord) | Phase 4 ✅ (Worker Scheduler + Discord Bot) | Phase 5 ✅ (Dashboard UI) | Phase 6 ✅ (Deploy)**
 
 **Not yet live.** No containers built, no LXC provisioned, no NPM proxy configured.
+
+| Phase | Done | Description |
+|-------|------|-------------|
+| Phase 1 | ✅ | DB layer — schema, CRUD, WAL, JSON serialization |
+| Phase 2 | ✅ | Flask web API — 10 routes, app factory, tests |
+| Phase 3 | ✅ | Analysis pipeline — transcript, Claude, Discord notify |
+| Phase 4 | ✅ | Worker scheduler + Discord bot |
+| Phase 5 | ✅ | Dashboard UI — feed, detail, submit, channels pages |
+| Phase 6 | ✅ | Deploy — Dockerfiles, docker-compose.yml |
 
 | File | Done | Phase |
 |------|------|-------|
@@ -22,16 +31,22 @@ Global rules (git workflow, methodology, shell env, GitHub account) live in `~/.
 | `web/app.py` | ✅ | 2 |
 | `web/requirements.txt` | ✅ | 2 |
 | `tests/test_web_api.py` | ✅ | 2 |
-| `web/Dockerfile` | ⬜ | 3 |
-| `worker/worker.py` | ⬜ | 3 |
-| `worker/pipeline.py` | ⬜ | 3 |
-| `worker/discord_bot.py` | ⬜ | 3 |
-| `worker/scheduler.py` | ⬜ | 3 |
-| `worker/requirements.txt` | ⬜ | 3 |
-| `worker/Dockerfile` | ⬜ | 3 |
-| `web/templates/` | ⬜ | 4 |
-| `web/static/` | ⬜ | 4 |
-| `docker-compose.yml` | ⬜ | 5 |
+| Phase 3 | ✅ | Analysis pipeline (`worker/pipeline.py`) — extract, Claude, notify |
+| `web/Dockerfile` | ✅ | 6 |
+| `worker/worker.py` | ✅ | 4 |
+| `worker/pipeline.py` | ✅ | 3 |
+| `worker/discord_bot.py` | ✅ | 4 |
+| `worker/scheduler.py` | ✅ | 4 |
+| `worker/requirements.txt` | ✅ | 4 |
+| `worker/Dockerfile` | ✅ | 6 |
+| `web/templates/base.html` | ✅ | 5 |
+| `web/templates/feed.html` | ✅ | 5 |
+| `web/templates/video.html` | ✅ | 5 |
+| `web/templates/submit.html` | ✅ | 5 |
+| `web/templates/channels.html` | ✅ | 5 |
+| `web/static/style.css` | ✅ | 5 |
+| `web/static/app.js` | ✅ | 5 |
+| `docker-compose.yml` | ✅ | 6 |
 
 ---
 
@@ -187,6 +202,27 @@ Healthcheck path for NPM / Docker: `GET /health` → 200 `{"ok": true}`
 
 ---
 
+## Phase 3 — Pipeline Key Notes
+
+- `fetch_transcript()` is synchronous (youtube-transcript-api has no async API) — always call via `run_in_executor` to avoid blocking the event loop
+- `DISCORD_WEBHOOK_URL` is read from `os.environ` inside each notify function (not at module level) so env changes at runtime take effect without restart
+- `RateLimitExhausted` is a distinct sentinel exception so `run_pipeline` can set `fail_reason=rate_limited` vs generic `claude_error`
+- `post_discord_success` accepts `relevant_projects` as either a Python list or a JSON string — handles both safely
+- `prompt_context.md` is read from `/app/prompt_context.md` at runtime (mounted read-only volume) — update on host, no rebuild needed
+
+---
+
+## Phase 4 — Worker Key Notes
+
+- `worker.py` uses a single asyncio event loop — `discord.py` and APScheduler both post coroutines to it; `discord_bot.start()` blocks forever but the scheduler still fires via the same loop
+- `DISCORD_BOT_TOKEN` not required — if absent, worker runs scheduler-only (Discord bot disabled); the event loop is kept alive with `asyncio.sleep(3600)`
+- `DISCORD_SUBMIT_CHANNEL_ID` must be a numeric channel ID (not a name); defaults to `0` (disabled) if blank — `on_message` silently ignores all messages when the ID is `0`
+- `check_channel` queues new videos via POST to the web container's `/api/submit` — requires `WEB_BASE_URL=http://web:5090` in the environment
+- `_channel_fail_counts` is in-memory (resets on restart) — 3 consecutive RSS fetch failures trigger a Discord webhook warning; count resets to `0` on any success
+- `reschedule_channels` fires `asyncio.create_task(check_channel(...))` immediately on startup for each enabled channel — catch-up runs fire-and-forget so startup doesn't block waiting for RSS fetches
+
+---
+
 ## Lessons Learned
 
 ### Phase 1 (DB Layer)
@@ -204,3 +240,30 @@ Healthcheck path for NPM / Docker: `GET /health` → 200 `{"ok": true}`
 - `request.get_json(silent=True) or {}` pattern throughout — never crashes on missing or malformed JSON body.
 - The `health` route has no docstring by design — it's self-evident. All 6 API routes have docstrings.
 - `curl` will need to be in the web Dockerfile for the Docker healthcheck — `python:3.12-slim` doesn't include it (lesson from FIBI Phase 3).
+
+---
+
+## Phase 5 — Dashboard Key Notes
+
+- **Aesthetic:** Terminal Intelligence — dark background (`#0b0c0f`), amber accent (`#f0c040`), Space Mono (headings/badges) + Inter (body)
+- All pages load from Flask-rendered templates; data is fetched client-side via `/api/*` endpoints — no server-side rendering of data
+- **Category badge colors:** homelab=blue, new_project=green, apply=orange, learning=yellow, velvet_verve=purple, low_value=gray
+- **Feed filters:** category, source, keyword, and project name; filter values sync to URL params for bookmarkability (restored from URL on page load)
+- **Channel add form:** accepts a YouTube channel URL (`youtube.com/channel/UCxxx`); server extracts the `channel_id` from the URL
+- **Auto-refresh:** fires every 15s when any pending or processing videos are present on the current page; clears when none remain
+- `relevant_projects` is stored as a JSON string in SQLite, deserialized to a Python list by `db.py`; the API returns it as a JSON array to the client
+- `video.html` and `channels.html` fetch all data on page load via JS — there is no template-level data injection for these pages
+
+---
+
+## Phase 6 — Deployment Key Notes
+
+- Both Dockerfiles use the repo root as build context (`context: .`) — required for `COPY shared/ ./shared/` to work; the service subdirectory alone cannot see sibling directories
+- `worker` depends on `web` with `condition: service_healthy` — won't start until `/health` returns 200; prevents worker from hitting the API before Flask is up
+- `WEB_BASE_URL=http://web:5090` — uses Docker Compose service name for inter-container communication; `localhost` will not work inside a container
+- `DB_PATH=/data/tubeintel.db` — SQLite mounted via `./data:/data` volume; data persists across restarts and survives container rebuilds
+- `prompt_context.md` mounted read-only at `/app/prompt_context.md` — edit on host, worker picks up changes on next run with no rebuild needed
+- Log rotation configured: `max-size: 10m`, `max-file: 3` — avoids disk fill on LXC with long-running containers
+- Build command: `docker compose build` (run from repo root)
+- Start command: `docker compose up -d`
+- `curl` must be installed in the web Dockerfile for Docker healthcheck — `python:3.12-slim` doesn't include it by default
