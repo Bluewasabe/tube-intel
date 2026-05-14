@@ -1,14 +1,17 @@
-import logging
 import os
 import re
 import sys
+import uuid
 
 import discord
 import httpx
+from structlog.contextvars import bound_contextvars
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-logger = logging.getLogger(__name__)
+from shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 WEB_BASE = os.environ.get("WEB_BASE_URL", "http://web:5090")
 _submit_channel_raw = os.environ.get("DISCORD_SUBMIT_CHANNEL_ID", "0").strip()
@@ -27,7 +30,7 @@ bot = discord.Client(intents=intents)
 
 @bot.event
 async def on_ready():
-    logger.info(f"Discord bot ready as {bot.user}")
+    logger.info("discord_bot_ready", bot_user=str(bot.user))
 
 
 @bot.event
@@ -43,33 +46,43 @@ async def on_message(message: discord.Message):
         return
 
     url = match.group(0)
-    await message.add_reaction("✅")
+    request_id = uuid.uuid4().hex[:8]
 
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.post(
-                f"{WEB_BASE}/api/submit",
-                json={"url": url, "source": "discord"}
-            )
-            data = r.json()
+    # request_id correlates the bot's submit log → API submit log → pipeline run
+    with bound_contextvars(request_id=request_id, source="discord",
+                           discord_user_id=str(message.author.id)):
+        logger.info("discord_submit_received", url=url)
+        await message.add_reaction("✅")
 
-        if data.get("status") == "exists":
-            await message.reply("Already scanned — check the dashboard for results.")
-        elif data.get("status") == "queued":
-            title = None
-            try:
-                # Title isn't known at submit time — pipeline fetches it later; oEmbed gives an immediate label for the reply
-                oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
-                async with httpx.AsyncClient(timeout=5) as oe_client:
-                    oe = await oe_client.get(oembed_url)
-                    if oe.status_code == 200:
-                        title = oe.json().get("title")
-            except Exception:
-                pass
-            label = title if title else url
-            await message.reply(f"Queued: {label} — I'll post results in #yt-intel when done.")
-        else:
-            await message.reply(f"Could not queue: {data.get('error', 'unknown error')}")
-    except Exception as e:
-        logger.error(f"Discord bot submit error: {e}")
-        await message.reply("Failed to queue — check worker logs.")
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.post(
+                    f"{WEB_BASE}/api/submit",
+                    json={"url": url, "source": "discord"}
+                )
+                data = r.json()
+
+            logger.info("discord_submit_response", status=data.get("status"),
+                        video_id=data.get("video_id"))
+
+            if data.get("status") == "exists":
+                await message.reply("Already scanned — check the dashboard for results.")
+            elif data.get("status") == "queued":
+                title = None
+                try:
+                    # Title isn't known at submit time — pipeline fetches it later; oEmbed gives an immediate label for the reply
+                    oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+                    async with httpx.AsyncClient(timeout=5) as oe_client:
+                        oe = await oe_client.get(oembed_url)
+                        if oe.status_code == 200:
+                            title = oe.json().get("title")
+                except Exception:
+                    pass
+                label = title if title else url
+                await message.reply(f"Queued: {label} — I'll post results in #yt-intel when done.")
+            else:
+                await message.reply(f"Could not queue: {data.get('error', 'unknown error')}")
+        except Exception as e:
+            logger.error("discord_submit_error", error=str(e),
+                         error_type=type(e).__name__)
+            await message.reply("Failed to queue — check worker logs.")
