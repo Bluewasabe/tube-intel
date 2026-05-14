@@ -1,12 +1,13 @@
 import asyncio
 import json
-import logging
 import os
 import re
 import sys
+import time
 
 import httpx
 from anthropic import AsyncAnthropic
+from structlog.contextvars import bound_contextvars
 from youtube_transcript_api import YouTubeTranscriptApi, NoTranscriptFound, TranscriptsDisabled
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -14,8 +15,9 @@ from shared.db import (
     insert_video, get_video_by_video_id, update_video_status,
     insert_analysis, get_video_by_id, get_pending_video
 )
+from shared.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # Sentinel for rate limit exhaustion — lets run_pipeline set fail_reason="rate_limited" vs generic "claude_error"
@@ -93,35 +95,43 @@ def _load_context() -> str:
         with open(CONTEXT_PATH, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
-        logger.warning(f"prompt_context.md not found at {CONTEXT_PATH}")
+        logger.warning("prompt_context_missing", path=CONTEXT_PATH)
         return "## No context available"
 
 
 async def fetch_metadata(video_id: str) -> dict:
     """Fetch video metadata via YouTube oEmbed (no API key)."""
     url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+    start = time.monotonic()
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.get(url)
-        r.raise_for_status()
-        data = r.json()
-        return {
-            "title": data.get("title"),
-            "channel_name": data.get("author_name"),
-            "channel_id": None,
-            "thumbnail_url": data.get("thumbnail_url"),
-            "published_at": None,
-        }
+    duration_ms = int((time.monotonic() - start) * 1000)
+    logger.info("outbound_api_call", service="youtube_oembed",
+                status_code=r.status_code, duration_ms=duration_ms)
+    r.raise_for_status()
+    data = r.json()
+    return {
+        "title": data.get("title"),
+        "channel_name": data.get("author_name"),
+        "channel_id": None,
+        "thumbnail_url": data.get("thumbnail_url"),
+        "published_at": None,
+    }
 
 
 def fetch_transcript(video_id: str) -> str | None:
     """Fetch transcript synchronously (youtube-transcript-api is not async)."""
+    start = time.monotonic()
     try:
         segments = YouTubeTranscriptApi.get_transcript(video_id)
+        duration_ms = int((time.monotonic() - start) * 1000)
+        logger.info("transcript_fetched", segments=len(segments), duration_ms=duration_ms)
         return " ".join(s["text"] for s in segments)
-    except (NoTranscriptFound, TranscriptsDisabled):
+    except (NoTranscriptFound, TranscriptsDisabled) as e:
+        logger.info("transcript_unavailable", reason=type(e).__name__)
         return None
     except Exception as e:
-        logger.warning(f"Transcript fetch error for {video_id}: {e}")
+        logger.warning("transcript_fetch_error", error=str(e))
         return None
 
 
@@ -130,17 +140,24 @@ async def _call_claude(prompt: str) -> str:
     for attempt, wait in enumerate([0, 5, 15, 45]):
         if wait:
             await asyncio.sleep(wait)
+        start = time.monotonic()
         try:
             msg = await client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
                 messages=[{"role": "user", "content": prompt}]
             )
+            duration_ms = int((time.monotonic() - start) * 1000)
+            logger.info("outbound_api_call", service="anthropic",
+                        model="claude-sonnet-4-6", duration_ms=duration_ms,
+                        attempt=attempt)
             return msg.content[0].text
         except Exception as e:
             if "429" in str(e):
                 if attempt < 3:
-                    logger.warning(f"Rate limited, retrying in {[5, 15, 45][attempt]}s...")
+                    logger.warning("claude_rate_limited",
+                                   retry_in_seconds=[5, 15, 45][attempt],
+                                   attempt=attempt)
                     continue
                 raise RateLimitExhausted("Rate limit exhausted after retries") from e
             raise
@@ -163,8 +180,12 @@ async def post_discord_success(video: dict, analysis: dict, base_url: str = "htt
         f"💡 {analysis['recommendation']}\n"
         f"🔗 View full analysis → {base_url}/video/{video['id']}"
     )
+    start = time.monotonic()
     async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(webhook_url, json={"content": msg})
+        r = await client.post(webhook_url, json={"content": msg})
+    logger.info("outbound_api_call", service="discord_webhook",
+                status_code=r.status_code, kind="success",
+                duration_ms=int((time.monotonic() - start) * 1000))
 
 
 async def post_discord_failure(video_id: str, title: str | None, fail_reason: str):
@@ -174,8 +195,12 @@ async def post_discord_failure(video_id: str, title: str | None, fail_reason: st
         return
     label = title or f"video_id={video_id}"
     msg = f"⚠️ **Scan failed**\n📺 {label}\n❌ Reason: `{fail_reason}`"
+    start = time.monotonic()
     async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(webhook_url, json={"content": msg})
+        r = await client.post(webhook_url, json={"content": msg})
+    logger.info("outbound_api_call", service="discord_webhook",
+                status_code=r.status_code, kind="failure",
+                duration_ms=int((time.monotonic() - start) * 1000))
 
 
 async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
@@ -187,98 +212,114 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
     if not video_id:
         return {"error": "invalid URL"}
 
-    # Dedup
-    existing = get_video_by_video_id(db_path, video_id)
-    if existing and existing["status"] == "done":
-        return {"video_id": video_id, "status": "exists", "id": existing["id"]}
-
-    # Insert pending row (may already exist if requeued)
-    row_id = insert_video(db_path, youtube_url, video_id,
-                          title=None, channel_name=None, channel_id=None,
-                          thumbnail_url=None, published_at=None, source=source)
-    if row_id is None:
+    # bound_contextvars makes every log call inside this block (and inside any
+    # nested coroutine in the same asyncio context) automatically include video_id.
+    with bound_contextvars(video_id=video_id, source=source):
+        # Dedup
         existing = get_video_by_video_id(db_path, video_id)
-        row_id = existing["id"] if existing else None
+        if existing and existing["status"] == "done":
+            logger.info("pipeline_skip_duplicate")
+            return {"video_id": video_id, "status": "exists", "id": existing["id"]}
 
-    if row_id is None:
-        logger.error(f"Could not resolve row_id for {video_id} — aborting pipeline")
-        update_video_status(db_path, video_id, "failed", fail_reason="db_error")
-        await post_discord_failure(video_id, None, "db_error")
-        return {"video_id": video_id, "status": "failed"}
+        logger.info("pipeline_start")
+        pipeline_start = time.monotonic()
 
-    update_video_status(db_path, video_id, "processing")
+        # Insert pending row (may already exist if requeued)
+        row_id = insert_video(db_path, youtube_url, video_id,
+                              title=None, channel_name=None, channel_id=None,
+                              thumbnail_url=None, published_at=None, source=source)
+        if row_id is None:
+            existing = get_video_by_video_id(db_path, video_id)
+            row_id = existing["id"] if existing else None
 
-    # Fetch metadata
-    title = None
-    try:
-        meta = await fetch_metadata(video_id)
-        title = meta["title"]
-        from shared.db import get_conn
-        with get_conn(db_path) as conn:
-            conn.execute(
-                "UPDATE videos SET title=?, channel_name=?, thumbnail_url=? WHERE video_id=?",
-                (meta["title"], meta["channel_name"], meta["thumbnail_url"], video_id)
-            )
-    except Exception as e:
-        logger.error(f"Metadata fetch failed for {video_id}: {e}")
-        update_video_status(db_path, video_id, "failed", fail_reason="fetch_error")
-        await post_discord_failure(video_id, None, "fetch_error")
-        return {"video_id": video_id, "status": "failed"}
+        if row_id is None:
+            logger.error("pipeline_db_error", message="could not resolve row_id")
+            update_video_status(db_path, video_id, "failed", fail_reason="db_error")
+            await post_discord_failure(video_id, None, "db_error")
+            return {"video_id": video_id, "status": "failed"}
 
-    # Fetch transcript (sync — run in executor so we don't block the event loop)
-    transcript = await asyncio.get_running_loop().run_in_executor(None, fetch_transcript, video_id)
-    if not transcript:
-        update_video_status(db_path, video_id, "failed", fail_reason="no_transcript")
-        await post_discord_failure(video_id, title, "no_transcript")
-        return {"video_id": video_id, "status": "failed"}
+        update_video_status(db_path, video_id, "processing")
 
-    update_video_status(db_path, video_id, "processing", transcript=transcript)
-
-    # Build prompt and call Claude
-    context = _load_context()
-    prompt = build_prompt(title, transcript, context)
-
-    try:
-        raw = await _call_claude(prompt)
-    except RateLimitExhausted:
-        logger.error(f"Rate limit exhausted for {video_id}")
-        update_video_status(db_path, video_id, "failed", fail_reason="rate_limited")
-        await post_discord_failure(video_id, title, "rate_limited")
-        return {"video_id": video_id, "status": "failed"}
-    except Exception as e:
-        logger.error(f"Claude API error for {video_id}: {e}")
-        update_video_status(db_path, video_id, "failed", fail_reason="claude_error")
-        await post_discord_failure(video_id, title, "claude_error")
-        return {"video_id": video_id, "status": "failed"}
-
-    # Parse response — retry once with stricter prompt on failure
-    try:
-        analysis_data = parse_claude_response(raw)
-    except ValueError:
+        # Fetch metadata
+        title = None
         try:
-            raw2 = await _call_claude(prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after.")
-            analysis_data = parse_claude_response(raw2)
+            meta = await fetch_metadata(video_id)
+            title = meta["title"]
+            from shared.db import get_conn
+            with get_conn(db_path) as conn:
+                conn.execute(
+                    "UPDATE videos SET title=?, channel_name=?, thumbnail_url=? WHERE video_id=?",
+                    (meta["title"], meta["channel_name"], meta["thumbnail_url"], video_id)
+                )
+        except Exception as e:
+            logger.error("pipeline_failed", stage="metadata", error=str(e),
+                         error_type=type(e).__name__)
+            update_video_status(db_path, video_id, "failed", fail_reason="fetch_error")
+            await post_discord_failure(video_id, None, "fetch_error")
+            return {"video_id": video_id, "status": "failed"}
+
+        # Fetch transcript (sync — run in executor so we don't block the event loop)
+        transcript = await asyncio.get_running_loop().run_in_executor(None, fetch_transcript, video_id)
+        if not transcript:
+            logger.warning("pipeline_failed", stage="transcript", reason="no_transcript")
+            update_video_status(db_path, video_id, "failed", fail_reason="no_transcript")
+            await post_discord_failure(video_id, title, "no_transcript")
+            return {"video_id": video_id, "status": "failed"}
+
+        update_video_status(db_path, video_id, "processing", transcript=transcript)
+
+        # Build prompt and call Claude
+        context = _load_context()
+        prompt = build_prompt(title, transcript, context)
+
+        try:
+            raw = await _call_claude(prompt)
         except RateLimitExhausted:
-            logger.error(f"Rate limit exhausted on retry for {video_id}")
+            logger.error("pipeline_failed", stage="claude", reason="rate_limited")
             update_video_status(db_path, video_id, "failed", fail_reason="rate_limited")
             await post_discord_failure(video_id, title, "rate_limited")
             return {"video_id": video_id, "status": "failed"}
         except Exception as e:
-            logger.error(f"Parse error for {video_id}: {e}")
-            update_video_status(db_path, video_id, "failed", fail_reason="parse_error")
-            await post_discord_failure(video_id, title, "parse_error")
+            logger.error("pipeline_failed", stage="claude", error=str(e),
+                         error_type=type(e).__name__)
+            update_video_status(db_path, video_id, "failed", fail_reason="claude_error")
+            await post_discord_failure(video_id, title, "claude_error")
             return {"video_id": video_id, "status": "failed"}
 
-    # Write analysis
-    insert_analysis(db_path, row_id,
-                    summary=analysis_data["summary"],
+        # Parse response — retry once with stricter prompt on failure
+        try:
+            analysis_data = parse_claude_response(raw)
+        except ValueError:
+            try:
+                raw2 = await _call_claude(prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after.")
+                analysis_data = parse_claude_response(raw2)
+            except RateLimitExhausted:
+                logger.error("pipeline_failed", stage="claude_retry", reason="rate_limited")
+                update_video_status(db_path, video_id, "failed", fail_reason="rate_limited")
+                await post_discord_failure(video_id, title, "rate_limited")
+                return {"video_id": video_id, "status": "failed"}
+            except Exception as e:
+                logger.error("pipeline_failed", stage="parse", error=str(e),
+                             error_type=type(e).__name__)
+                update_video_status(db_path, video_id, "failed", fail_reason="parse_error")
+                await post_discord_failure(video_id, title, "parse_error")
+                return {"video_id": video_id, "status": "failed"}
+
+        # Write analysis
+        insert_analysis(db_path, row_id,
+                        summary=analysis_data["summary"],
+                        category=analysis_data["category"],
+                        relevant_projects=analysis_data["relevant_projects"],
+                        recommendation=analysis_data["recommendation"],
+                        confidence=analysis_data["confidence"])
+        update_video_status(db_path, video_id, "done")
+
+        video_row = get_video_by_id(db_path, row_id)
+        await post_discord_success(video_row, analysis_data)
+
+        logger.info("pipeline_done",
                     category=analysis_data["category"],
-                    relevant_projects=analysis_data["relevant_projects"],
-                    recommendation=analysis_data["recommendation"],
-                    confidence=analysis_data["confidence"])
-    update_video_status(db_path, video_id, "done")
+                    confidence=analysis_data["confidence"],
+                    duration_ms=int((time.monotonic() - pipeline_start) * 1000))
 
-    video_row = get_video_by_id(db_path, row_id)
-    await post_discord_success(video_row, analysis_data)
-
-    return {"video_id": video_id, "status": "done", "id": row_id}
+        return {"video_id": video_id, "status": "done", "id": row_id}

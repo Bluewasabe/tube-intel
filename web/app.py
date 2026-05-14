@@ -1,7 +1,11 @@
 import os
 import re
 import sys
-from flask import Flask, jsonify, request, render_template
+import time
+import uuid
+
+from flask import Flask, g, jsonify, request, render_template
+from structlog.contextvars import bind_contextvars, clear_contextvars
 
 # shared/ is COPY'd into the web container at build time.
 # For local dev, the path insert below makes it importable from the project root.
@@ -12,6 +16,9 @@ from shared.db import (
     list_videos, count_videos, get_analysis_by_video_id, insert_channel,
     list_all_channels, toggle_channel, delete_channel, update_channel_interval
 )
+from shared.logging_config import get_logger, log_keys_present, setup_logging
+
+logger = get_logger(__name__)
 
 DB_PATH = os.environ.get("DB_PATH", "/data/tubeintel.db")
 VALID_INTERVALS = {8, 12, 24}
@@ -47,6 +54,48 @@ def create_app(db_path: str = None) -> Flask:
     app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
     _db = db_path or DB_PATH
     init_db(_db)
+
+    # ── Request logging middleware ────────────────────────────────────────────
+
+    @app.before_request
+    def _log_request_start():
+        g._start_time = time.monotonic()
+        request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:8]
+        g._request_id = request_id
+        bind_contextvars(
+            request_id=request_id,
+            **{
+                "http.request.method": request.method,
+                "url.path": request.path,
+            },
+        )
+
+    @app.after_request
+    def _log_request_end(response):
+        duration_ms = int((time.monotonic() - getattr(g, "_start_time", time.monotonic())) * 1000)
+        logger.info(
+            "http_request",
+            **{
+                "http.response.status_code": response.status_code,
+                "event.duration_ms": duration_ms,
+                "client.ip": request.remote_addr,
+                "user_agent.original": request.user_agent.string[:200] if request.user_agent else None,
+            },
+        )
+        response.headers["X-Request-ID"] = getattr(g, "_request_id", "")
+        clear_contextvars()
+        return response
+
+    @app.errorhandler(Exception)
+    def _log_unhandled(e):
+        logger.error(
+            "unhandled_exception",
+            error_type=type(e).__name__,
+            message=str(e),
+            exc_info=True,
+        )
+        # Let Flask render the default error page; this is just for logging.
+        raise e
 
     # ── Health ────────────────────────────────────────────────────────────────
 
@@ -212,4 +261,17 @@ def create_app(db_path: str = None) -> Flask:
 if __name__ == "__main__":
     port = int(os.environ.get("FLASK_PORT", 5090))
     debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    if debug:
+        os.environ.setdefault("LOG_LEVEL", "DEBUG")
+    setup_logging(service_name="tube-intel-web")
+    logger.info(
+        "web_startup",
+        db_path=DB_PATH,
+        port=port,
+        debug=debug,
+        **log_keys_present(
+            anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY", ""),
+            discord_webhook_url=os.environ.get("DISCORD_WEBHOOK_URL", ""),
+        ),
+    )
     create_app().run(host="0.0.0.0", port=port, debug=debug)

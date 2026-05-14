@@ -7,10 +7,13 @@ services:
       - "5090:5090"
     volumes:
       - ./data:/data
+      - ./logs:/logs
       - ./prompt_context.md:/app/prompt_context.md:ro
     env_file: .env
     environment:
       DB_PATH: /data/tubeintel.db
+      SERVICE_NAME: tube-intel-web
+      LOG_FILE: /logs/tube-intel-web.log
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5090/health"]
@@ -25,7 +28,7 @@ services:
       driver: "json-file"
       options:
         max-size: "10m"
-        max-file: "3"
+        max-file: "5"
 
   worker:
     build:
@@ -33,11 +36,14 @@ services:
       dockerfile: worker/Dockerfile
     volumes:
       - ./data:/data
+      - ./logs:/logs
       - ./prompt_context.md:/app/prompt_context.md:ro
     env_file: .env
     environment:
       DB_PATH: /data/tubeintel.db
       WEB_BASE_URL: http://web:5090
+      SERVICE_NAME: tube-intel-worker
+      LOG_FILE: /logs/tube-intel-worker.log
     restart: unless-stopped
     depends_on:
       web:
@@ -50,4 +56,4 @@ services:
       driver: "json-file"
       options:
         max-size: "10m"
-        max-file: "3"
+        max-file: "5"
