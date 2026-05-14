@@ -114,6 +114,15 @@ def build_scheduler(db_path: str = DB_PATH) -> AsyncIOScheduler:
     return scheduler
 
 
+def _log_catchup_exception(task: asyncio.Task):
+    """Surface exceptions from fire-and-forget startup catch-up tasks."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(f"Catch-up task failed: {exc!r}")
+
+
 async def reschedule_channels(scheduler: AsyncIOScheduler, db_path: str = DB_PATH):
     """Add or update per-channel check jobs. Also triggers immediate catch-up on startup."""
     channels = get_enabled_channels(db_path)
@@ -126,5 +135,7 @@ async def reschedule_channels(scheduler: AsyncIOScheduler, db_path: str = DB_PAT
             scheduler.add_job(check_channel, "interval",
                               hours=ch["check_interval_hours"],
                               id=job_id, args=[ch, db_path])
-        # Fire-and-forget catch-up: create_task so startup doesn't block waiting for each RSS fetch
-        asyncio.create_task(check_channel(ch, db_path))
+        # Fire-and-forget catch-up: create_task so startup doesn't block waiting for each RSS fetch.
+        # add_done_callback surfaces unhandled exceptions instead of letting asyncio swallow them.
+        task = asyncio.create_task(check_channel(ch, db_path))
+        task.add_done_callback(_log_catchup_exception)

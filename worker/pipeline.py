@@ -263,7 +263,7 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
             update_video_status(db_path, video_id, "failed", fail_reason="rate_limited")
             await post_discord_failure(video_id, title, "rate_limited")
             return {"video_id": video_id, "status": "failed"}
-        except (ValueError, Exception) as e:
+        except Exception as e:
             logger.error(f"Parse error for {video_id}: {e}")
             update_video_status(db_path, video_id, "failed", fail_reason="parse_error")
             await post_discord_failure(video_id, title, "parse_error")

@@ -42,6 +42,9 @@ def extract_channel_id_from_url(url: str) -> str | None:
 def create_app(db_path: str = None) -> Flask:
     """App factory — accepts db_path override for testing."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
+    # Cap request bodies at 64 KB — submissions are short URLs, channel adds are tiny JSON.
+    # Defends against accidental or malicious oversized POST bodies.
+    app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
     _db = db_path or DB_PATH
     init_db(_db)
 
