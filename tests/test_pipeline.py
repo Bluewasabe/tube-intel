@@ -2,7 +2,10 @@ import json
 import pytest
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from worker.pipeline import extract_video_id, parse_claude_response, build_prompt
+from worker.pipeline import (
+    extract_video_id, parse_claude_response,
+    build_prompt, build_system_prompt, build_user_prompt,
+)
 
 def test_extract_standard_url():
     assert extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == "dQw4w9WgXcQ"
@@ -61,3 +64,29 @@ def test_build_prompt_contains_title_and_transcript():
 def test_parse_claude_response_malformed_json():
     with pytest.raises(ValueError, match="JSON parse failed"):
         parse_claude_response("{not valid json")
+
+def test_build_system_prompt_holds_invariants():
+    system = build_system_prompt("## context")
+    # Stable persona, context insertion, and JSON-shape instructions all live in system
+    assert "categorize YouTube videos" in system
+    assert "## context" in system
+    assert "JSON" in system
+    # Per-video bits MUST NOT leak into the cached system prefix
+    assert "**Title:**" not in system
+    assert "**Transcript:**" not in system
+
+def test_build_user_prompt_holds_per_request_bits():
+    user = build_user_prompt("My Cool Video", "this is the transcript")
+    assert "My Cool Video" in user
+    assert "this is the transcript" in user
+    # Frozen content stays in system, not user
+    assert "categorize YouTube videos" not in user
+    assert "JSON" not in user
+
+def test_build_prompt_combined_shim_still_works():
+    # Backward-compat shim — keeps callers that want a single string working
+    prompt = build_prompt("My Cool Video", "this is the transcript", "## context")
+    assert "My Cool Video" in prompt
+    assert "this is the transcript" in prompt
+    assert "## context" in prompt
+    assert "JSON" in prompt
