@@ -58,25 +58,22 @@ def parse_claude_response(raw: str) -> dict:
     return data
 
 
-def build_prompt(title: str, transcript: str, context: str) -> str:
+def build_system_prompt(context: str) -> str:
+    """Frozen prefix sent as the system prompt — cached via cache_control.
+
+    Includes persona + projects/goals context + JSON-shape instructions. Stable
+    across every video, which is what makes it cacheable. The video title and
+    transcript are the only per-request bits and live in the user message.
+    """
     return f"""You are an AI assistant helping a senior software engineer categorize YouTube videos.
 
 {context}
 
 ---
 
-## Video to Analyze
-
-**Title:** {title}
-
-**Transcript:**
-{transcript}
-
----
-
 ## Instructions
 
-Based on the projects and goals described above, analyze this video and return a single JSON object:
+Based on the projects and goals described above, analyze the video provided in the next message and return a single JSON object:
 
 {{
   "summary": "2-3 sentence plain English summary of what the video covers",
@@ -86,8 +83,27 @@ Based on the projects and goals described above, analyze this video and return a
   "confidence": "high | medium | low"
 }}
 
-Return ONLY the JSON object. No markdown, no explanation.
-"""
+Return ONLY the JSON object. No markdown, no explanation."""
+
+
+def build_user_prompt(title: str, transcript: str) -> str:
+    """Per-request user message — title + transcript only. Not cached."""
+    return f"""## Video to Analyze
+
+**Title:** {title}
+
+**Transcript:**
+{transcript}"""
+
+
+def build_prompt(title: str, transcript: str, context: str) -> str:
+    """Combined prompt — kept for backward compatibility with existing tests.
+
+    Production path uses build_system_prompt + build_user_prompt so the system
+    portion can be cached. This shim concatenates them for callers that still
+    want a single string.
+    """
+    return build_system_prompt(context) + "\n\n---\n\n" + build_user_prompt(title, transcript)
 
 
 def _load_context() -> str:
@@ -135,7 +151,20 @@ def fetch_transcript(video_id: str) -> str | None:
         return None
 
 
-async def _call_claude(prompt: str) -> str:
+CLAUDE_MODEL = "claude-haiku-4-5"
+
+
+async def _call_claude(system: str, user_message: str) -> str:
+    """Call Claude with a cacheable system prompt + per-request user message.
+
+    The system block carries cache_control: ephemeral so identical system
+    content across calls is served from cache (~10% of input cost) instead of
+    re-tokenized. Caching only fires once the cacheable prefix is large enough
+    for the model — Haiku 4.5's minimum is 4096 tokens; smaller prefixes are a
+    silent no-op (cache_creation_input_tokens stays 0). The cache_read /
+    cache_write counters are emitted on every outbound_api_call log so we can
+    see when caching actually kicks in.
+    """
     client = AsyncAnthropic()
     for attempt, wait in enumerate([0, 5, 15, 45]):
         if wait:
@@ -143,14 +172,27 @@ async def _call_claude(prompt: str) -> str:
         start = time.monotonic()
         try:
             msg = await client.messages.create(
-                model="claude-sonnet-4-6",
+                model=CLAUDE_MODEL,
                 max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}]
+                system=[{
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                messages=[{"role": "user", "content": user_message}],
             )
             duration_ms = int((time.monotonic() - start) * 1000)
-            logger.info("outbound_api_call", service="anthropic",
-                        model="claude-sonnet-4-6", duration_ms=duration_ms,
-                        attempt=attempt)
+            logger.info(
+                "outbound_api_call",
+                service="anthropic",
+                model=CLAUDE_MODEL,
+                duration_ms=duration_ms,
+                attempt=attempt,
+                input_tokens=msg.usage.input_tokens,
+                output_tokens=msg.usage.output_tokens,
+                cache_read_tokens=getattr(msg.usage, "cache_read_input_tokens", 0) or 0,
+                cache_write_tokens=getattr(msg.usage, "cache_creation_input_tokens", 0) or 0,
+            )
             return msg.content[0].text
         except Exception as e:
             if "429" in str(e):
@@ -268,12 +310,15 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
 
         update_video_status(db_path, video_id, "processing", transcript=transcript)
 
-        # Build prompt and call Claude
+        # Build prompt and call Claude. System carries the frozen prefix
+        # (persona + projects/goals + JSON instructions) and is cacheable;
+        # user_message carries the variable per-video bits.
         context = _load_context()
-        prompt = build_prompt(title, transcript, context)
+        system = build_system_prompt(context)
+        user_message = build_user_prompt(title, transcript)
 
         try:
-            raw = await _call_claude(prompt)
+            raw = await _call_claude(system, user_message)
         except RateLimitExhausted:
             logger.error("pipeline_failed", stage="claude", reason="rate_limited")
             update_video_status(db_path, video_id, "failed", fail_reason="rate_limited")
@@ -286,12 +331,18 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
             await post_discord_failure(video_id, title, "claude_error")
             return {"video_id": video_id, "status": "failed"}
 
-        # Parse response — retry once with stricter prompt on failure
+        # Parse response — retry once with stricter prompt on failure.
+        # The strictness reminder appends to the user message only so the
+        # system prefix stays byte-identical and the cache (when it fires)
+        # remains valid across the retry.
         try:
             analysis_data = parse_claude_response(raw)
         except ValueError:
             try:
-                raw2 = await _call_claude(prompt + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after.")
+                raw2 = await _call_claude(
+                    system,
+                    user_message + "\n\nIMPORTANT: Return ONLY valid JSON. No text before or after.",
+                )
                 analysis_data = parse_claude_response(raw2)
             except RateLimitExhausted:
                 logger.error("pipeline_failed", stage="claude_retry", reason="rate_limited")
