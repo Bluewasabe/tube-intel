@@ -59,10 +59,12 @@
         html += '<div class="detail-section"><h2 class="detail-section-title">Summary</h2>';
         html += '<p class="detail-summary">' + escapeHtml(a.summary || '') + '</p></div>';
 
-        // Recommendation
-        if (a.recommendation) {
-          html += '<div class="detail-section detail-recommendation"><h2 class="detail-section-title">Recommendation</h2>';
-          html += '<p>' + escapeHtml(a.recommendation) + '</p></div>';
+        // Implementation plan
+        if (a.plan) {
+          html += '<div class="detail-section detail-plan"><h2 class="detail-section-title">Implementation Plan</h2>';
+          html += '<pre class="plan-content">' + escapeHtml(a.plan) + '</pre>';
+          html += '<button class="copy-plan-btn" onclick="navigator.clipboard.writeText(' + JSON.stringify(a.plan) + ').then(()=>{this.textContent=\'Copied!\';setTimeout(()=>this.textContent=\'Copy to clipboard\',2000)})">Copy to clipboard</button>';
+          html += '</div>';
         }
 
         // Relevant projects

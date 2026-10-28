@@ -9,7 +9,7 @@ COPY shared/ ./shared/
 COPY worker/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy worker application
-COPY worker/ ./
+# Copy worker application (preserve package structure so `from worker.X` imports work)
+COPY worker/ ./worker/
 
-CMD ["python", "worker.py"]
+CMD ["python", "worker/worker.py"]

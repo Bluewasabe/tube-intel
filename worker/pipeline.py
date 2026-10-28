@@ -31,6 +31,7 @@ YT_PATTERN = re.compile(r'(?:youtube\.com/watch\?.*v=|youtu\.be/)([a-zA-Z0-9_-]{
 
 DB_PATH = os.environ.get("DB_PATH", "/data/tubeintel.db")
 CONTEXT_PATH = os.environ.get("CONTEXT_PATH", "/app/prompt_context.md")
+COOKIES_PATH = os.environ.get("COOKIES_PATH", "/app/cookies.txt")
 
 
 def extract_video_id(url: str) -> str | None:
@@ -55,7 +56,12 @@ def parse_claude_response(raw: str) -> dict:
     confidence = data.get("confidence", "")
     if confidence not in VALID_CONFIDENCE:
         raise ValueError(f"invalid confidence: {confidence!r}")
+    if not data.get("plan"):
+        raise ValueError("missing plan field")
     return data
+
+
+TRANSCRIPT_WORD_LIMIT = 4000
 
 
 def build_system_prompt(context: str) -> str:
@@ -65,7 +71,7 @@ def build_system_prompt(context: str) -> str:
     across every video, which is what makes it cacheable. The video title and
     transcript are the only per-request bits and live in the user message.
     """
-    return f"""You are an AI assistant helping a senior software engineer categorize YouTube videos.
+    return f"""You are an AI assistant helping a senior software engineer decide what to build next and how.
 
 {context}
 
@@ -73,21 +79,24 @@ def build_system_prompt(context: str) -> str:
 
 ## Instructions
 
-Based on the projects and goals described above, analyze the video provided in the next message and return a single JSON object:
+Analyze the video provided in the next message. Return a single JSON object:
 
 {{
-  "summary": "2-3 sentence plain English summary of what the video covers",
+  "summary": "2-3 sentences: what the video covers and why it matters",
   "category": "one of: new_project | apply_to_existing | learning | homelab | velvet_verve | low_value",
-  "relevant_projects": ["list", "of", "project", "names", "from", "the", "context", "above"],
-  "recommendation": "Specific actionable recommendation — reference concrete timestamps or techniques if applicable",
-  "confidence": "high | medium | low"
+  "relevant_projects": ["project names from the context above that this directly applies to"],
+  "confidence": "high | medium | low",
+  "plan": "A concrete implementation brief the user can hand directly to Claude to start building. Include: what to build, key technical decisions, a rough phase or step structure, and any specific tools/patterns from the video worth adopting. Write it as an opening brief — 150-300 words. Skip timestamp citations. If category is low_value, write a single sentence explaining why to skip it."
 }}
 
-Return ONLY the JSON object. No markdown, no explanation."""
+Return ONLY the JSON object. No markdown fences, no explanation outside the JSON."""
 
 
 def build_user_prompt(title: str, transcript: str) -> str:
-    """Per-request user message — title + transcript only. Not cached."""
+    """Per-request user message — title + transcript, truncated to word limit. Not cached."""
+    words = transcript.split()
+    if len(words) > TRANSCRIPT_WORD_LIMIT:
+        transcript = " ".join(words[:TRANSCRIPT_WORD_LIMIT]) + "\n\n[transcript truncated]"
     return f"""## Video to Analyze
 
 **Title:** {title}
@@ -136,13 +145,23 @@ async def fetch_metadata(video_id: str) -> dict:
 
 
 def fetch_transcript(video_id: str) -> str | None:
-    """Fetch transcript synchronously (youtube-transcript-api is not async)."""
+    """Fetch transcript synchronously (youtube-transcript-api is not async).
+
+    v1.x API: instantiate YouTubeTranscriptApi() and call .fetch(video_id).
+    Uses cookies.txt if present at COOKIES_PATH to avoid IP-based rate limits.
+    """
+    import os as _os
+    cookies = COOKIES_PATH if _os.path.isfile(COOKIES_PATH) else None
+    if cookies:
+        logger.debug("transcript_using_cookies", path=cookies)
     start = time.monotonic()
     try:
-        segments = YouTubeTranscriptApi.get_transcript(video_id)
+        api = YouTubeTranscriptApi(cookies=cookies) if cookies else YouTubeTranscriptApi()
+        fetched = api.fetch(video_id)
+        segments = list(fetched)
         duration_ms = int((time.monotonic() - start) * 1000)
-        logger.info("transcript_fetched", segments=len(segments), duration_ms=duration_ms)
-        return " ".join(s["text"] for s in segments)
+        logger.info("transcript_fetched", segments=len(segments), duration_ms=duration_ms, cookies_used=bool(cookies))
+        return " ".join(s.text for s in segments)
     except (NoTranscriptFound, TranscriptsDisabled) as e:
         logger.info("transcript_unavailable", reason=type(e).__name__)
         return None
@@ -217,10 +236,9 @@ async def post_discord_success(video: dict, analysis: dict, base_url: str = "htt
     msg = (
         f"✅ **New scan complete**\n"
         f"📺 {video['title']}\n"
-        f"📁 Category: `{analysis['category']}`  |  Confidence: `{analysis['confidence']}`\n"
-        f"🎯 Relevant to: {projects_str}\n"
-        f"💡 {analysis['recommendation']}\n"
-        f"🔗 View full analysis → {base_url}/video/{video['id']}"
+        f"📁 `{analysis['category']}`  |  `{analysis['confidence']} confidence`  |  {projects_str}\n"
+        f"📝 {analysis.get('summary', '')}\n"
+        f"🔗 Full plan → {base_url}/video/{video['id']}"
     )
     start = time.monotonic()
     async with httpx.AsyncClient(timeout=10) as client:
@@ -361,7 +379,7 @@ async def run_pipeline(youtube_url: str, source: str, db_path: str = DB_PATH):
                         summary=analysis_data["summary"],
                         category=analysis_data["category"],
                         relevant_projects=analysis_data["relevant_projects"],
-                        recommendation=analysis_data["recommendation"],
+                        plan=analysis_data["plan"],
                         confidence=analysis_data["confidence"])
         update_video_status(db_path, video_id, "done")
 
