@@ -4,6 +4,8 @@ import sys
 import time
 import uuid
 
+import requests
+
 from flask import Flask, g, jsonify, request, render_template
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
@@ -28,6 +30,8 @@ _YT_RE = re.compile(r'(?:youtube\.com/watch\?.*v=|youtu\.be/)([a-zA-Z0-9_-]{11})
 
 # Matches youtube.com/channel/UCxxxxxxx channel URLs
 _YT_CHANNEL_RE = re.compile(r'youtube\.com/channel/(UC[a-zA-Z0-9_-]+)')
+# Matches youtube.com/@handle or youtube.com/@handle/... URLs
+_YT_HANDLE_RE = re.compile(r'youtube\.com/@([a-zA-Z0-9_.-]+)')
 
 
 def extract_video_id(url: str) -> str | None:
@@ -36,14 +40,37 @@ def extract_video_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 
-def extract_channel_id_from_url(url: str) -> str | None:
-    """Extract YouTube channel ID from a channel URL.
+def resolve_channel_id(url: str) -> str | None:
+    """Extract or resolve a YouTube channel ID from a URL.
 
-    Supports: youtube.com/channel/UCxxxxxxx
-    Returns None for /@handle URLs (require network resolution, out of scope).
+    Supports:
+    - youtube.com/channel/UCxxxxxxx  — extracted directly from URL
+    - youtube.com/@handle            — resolved by fetching the page and reading channelId from HTML
+    Returns None if resolution fails.
     """
     m = _YT_CHANNEL_RE.search(url)
-    return m.group(1) if m else None
+    if m:
+        return m.group(1)
+    m = _YT_HANDLE_RE.search(url)
+    if not m:
+        return None
+    handle = m.group(1)
+    try:
+        r = requests.get(
+            f"https://www.youtube.com/@{handle}/videos",
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        match = re.search(r'(UC[a-zA-Z0-9_-]{22})', r.text)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
+# Keep old name as alias so existing callers aren't broken
+def extract_channel_id_from_url(url: str) -> str | None:
+    return resolve_channel_id(url)
 
 
 def create_app(db_path: str = None) -> Flask:
@@ -199,9 +226,9 @@ def create_app(db_path: str = None) -> Flask:
         if not channel_url:
             return jsonify({"error": "channel_url required"}), 400
 
-        channel_id = extract_channel_id_from_url(channel_url)
+        channel_id = resolve_channel_id(channel_url)
         if not channel_id:
-            return jsonify({"error": "Could not extract channel ID from URL. Use format: youtube.com/channel/UCxxxxxxx"}), 400
+            return jsonify({"error": "Could not resolve channel ID. Use youtube.com/channel/UCxxxxxxx or youtube.com/@handle"}), 400
 
         if not channel_name:
             channel_name = channel_id

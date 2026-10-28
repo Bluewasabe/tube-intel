@@ -38,6 +38,7 @@ services:
       - ./data:/data
       - ./logs:/logs
       - ./prompt_context.md:/app/prompt_context.md:ro
+      - ./cookies.txt:/app/cookies.txt:ro
     env_file: .env
     environment:
       DB_PATH: /data/tubeintel.db

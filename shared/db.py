@@ -35,7 +35,7 @@ def init_db(db_path: str):
                 summary TEXT,
                 category TEXT,
                 relevant_projects TEXT,
-                recommendation TEXT,
+                plan TEXT,
                 confidence TEXT,
                 analyzed_at TEXT NOT NULL
             );
@@ -52,6 +52,14 @@ def init_db(db_path: str):
             );
         """)
         conn.commit()
+        # Migration: rename recommendation → plan (idempotent)
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(analysis)").fetchall()]
+        if "recommendation" in cols and "plan" not in cols:
+            conn.execute("ALTER TABLE analysis RENAME COLUMN recommendation TO plan")
+            conn.commit()
+        elif "plan" not in cols:
+            conn.execute("ALTER TABLE analysis ADD COLUMN plan TEXT")
+            conn.commit()
 
 
 @contextmanager
@@ -128,14 +136,14 @@ def get_pending_video(db_path) -> dict | None:
 
 
 def insert_analysis(db_path, video_id_fk, summary, category, relevant_projects,
-                    recommendation, confidence):
+                    plan, confidence):
     with get_conn(db_path) as conn:
         conn.execute(
             """INSERT OR REPLACE INTO analysis
-               (video_id, summary, category, relevant_projects, recommendation, confidence, analyzed_at)
+               (video_id, summary, category, relevant_projects, plan, confidence, analyzed_at)
                VALUES (?,?,?,?,?,?,?)""",
             (video_id_fk, summary, category, json.dumps(relevant_projects),
-             recommendation, confidence, _now())
+             plan, confidence, _now())
         )
 
 
@@ -172,7 +180,7 @@ def list_videos(db_path, limit=50, offset=0, category=None, source=None, keyword
         # Never interpolate user input into `where` directly.
         rows = conn.execute(f"""
             SELECT v.*, a.summary, a.category, a.relevant_projects,
-                   a.recommendation, a.confidence, a.analyzed_at
+                   a.plan, a.confidence, a.analyzed_at
             FROM videos v
             LEFT JOIN analysis a ON a.video_id = v.id
             {where}
